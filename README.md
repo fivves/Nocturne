@@ -25,6 +25,58 @@
 - Downloads and offline mode
 - Cool interface
 
+## Changes In This Fork
+
+Compared with upstream Nocturne 1.0.1 (`Jeffser/Nocturne` at `64a83ff`), this fork currently includes:
+
+### Jellyfin
+
+- Added a persistent Jellyfin library cache for songs, albums, artists, and playlists, scoped to the current server URL and user.
+- Loads cached Jellyfin library data at login so library pages and searches can populate before fresh network results finish.
+- Refreshes the Jellyfin cache in the background after login.
+- Added a Jellyfin-only sidebar sync button to manually refresh the server library cache and reload the visible library page.
+- Updated Jellyfin search to cache returned models and reuse cached results when the relevant library section is complete.
+- Changed Jellyfin artist lookups to use album artists, including artist album counts, artist albums, biographies, related artists, and top-song queries.
+- Saves Jellyfin cache updates after album, artist, playlist, song, random-song, similar-song, favorite, and unfavorite operations.
+- Stores more Jellyfin song metadata locally, including track number, disc number, album ReplayGain, and track ReplayGain.
+
+### Local Files
+
+- Reworked local-library scanning to use a bounded worker pool instead of starting one thread per song.
+- Added local song, album, artist, and search-text indexes for faster list loading and search.
+- Reused those indexes for random albums, newest albums, favorite albums, artist lists, random songs, and local search.
+- Added duplicate cover-art load protection so the same cover is not parsed by multiple background workers at once.
+- Made local metadata parsing safer when tracks have missing artist tags, using album artist or an unknown-artist fallback.
+- Preserved semicolon-separated artist support while avoiding crashes on empty artist metadata.
+
+### Large Library UI
+
+- Reworked songs, albums, and artists search pages to keep ID-to-widget dictionaries instead of scanning GTK children for every result.
+- Added search tokens so stale worker results are ignored when the search text changes quickly.
+- Moved result appending and page visibility updates onto the GTK main loop.
+- Added widget reuse to paginated album pages so repeated album results are shown again instead of duplicated.
+- Moved artist page top-song widget creation and dynamic background CSS application onto the GTK main loop.
+
+### Carousel
+
+- Replaced the carousel internals with a horizontal scrolled layout that fills available width.
+- Added previous and next overlay buttons with smooth page scrolling.
+- Added pagination state updates so carousel buttons appear only when content overflows.
+- Added horizontal scroll and Shift + wheel support for carousel navigation.
+
+### Playback And Controls
+
+- Added a global Space shortcut for play/pause.
+- Added Play/Pause to the shortcuts dialog.
+- Added spectrum visualizer throttling so spectrum parsing workers do not accumulate faster than they finish.
+
+### Build, Install, And Maintenance
+
+- Added `install.sh` for local installs: dependency checks, fresh Meson build, running-app shutdown, install to `~/.local`, icon-cache refresh, and relaunch.
+- Added Arch-oriented synced-lyrics dependency checks and guidance to the installer.
+- Added a Meson `update_icon_cache` option so scripted installs can control when icon cache updates happen.
+- Added `AGENTS.md` with a compact project map, build commands, architecture notes, and performance guidance for future agent-assisted work.
+
 ## Screenies
 
 HomePage | Song Queue | Lyrics | Song List | Album Page
