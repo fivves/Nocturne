@@ -11,7 +11,7 @@
 > Please be aware that [GNOME Code of Conduct](https://conduct.gnome.org) applies to Nocturne before interacting with this repository.
 
 > [!WARNING]
-> AI generated issues and PRs will be denied, repeated offence will result in a ban from the repository.
+> AI TOOLS ARE FULLY WELCOME ON THIS FORK, IN CONTRAST THE POLICY OF THE OFFICIAL BUILD! If you disagree with the use of AI-agent assisted tools, do NOT use this fork. 
 
 ## Features
 
