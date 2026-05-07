@@ -76,6 +76,14 @@ template $NocturneWindow: Adw.ApplicationWindow {
                   }
 
                   [start]
+                  Gtk.Button sync_button_el {
+                    visible: false;
+                    icon-name: "update-symbolic";
+                    tooltip-text: _("Sync Jellyfin Server");
+                    action-name: "app.sync_jellyfin_server";
+                  }
+
+                  [start]
                   Adw.Spinner loading_el {
                     visible: false;
                   }

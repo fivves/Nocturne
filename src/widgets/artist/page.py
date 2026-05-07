@@ -67,14 +67,17 @@ class ArtistPage(Adw.NavigationPage):
         self.top_songs_wrapbox.list_el.set_line_spacing(5)
         threading.Thread(target=self.update_top_songs).start()
 
-    def update_top_songs(self):
-        # call in different thread
-        integration = get_current_integration()
-        top_songs = integration.getTopSongs(self.id)
+    def set_top_songs(self, top_songs:list):
         self.top_songs_wrapbox.set_visible(len(top_songs) > 5)
         if len(top_songs) > 5:
             song_widgets = [SongSmallRow(song_id, show_album_name=True) for song_id in top_songs]
             self.top_songs_wrapbox.set_widgets(song_widgets)
+
+    def update_top_songs(self):
+        # call in different thread
+        integration = get_current_integration()
+        top_songs = integration.getTopSongs(self.id)
+        GLib.idle_add(self.set_top_songs, top_songs)
 
     def update_rating(self, rating:int):
         for i, el in enumerate(list(self.rating_container)):
@@ -88,9 +91,7 @@ class ArtistPage(Adw.NavigationPage):
             self.avatar_el.set_custom_image(None)
 
     def update_background(self, raw_bytes:bytes):
-        def run():
-            img_io = io.BytesIO(raw_bytes)
-            color = ColorThief(img_io).get_color(quality=10)
+        def apply_css(color):
             css = f"""
             clamp {{
                 transition: background .2s;
@@ -101,10 +102,15 @@ class ArtistPage(Adw.NavigationPage):
             """
             provider = Gtk.CssProvider()
             provider.load_from_data(css.encode())
-            GLib.idle_add(self.clamp_el.get_style_context().add_provider,
+            self.clamp_el.get_style_context().add_provider(
                 provider,
                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
             )
+
+        def run():
+            img_io = io.BytesIO(raw_bytes)
+            color = ColorThief(img_io).get_color(quality=10)
+            GLib.idle_add(apply_css, color)
         if raw_bytes:
             threading.Thread(target=run).start()
 

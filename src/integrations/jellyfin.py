@@ -32,6 +32,236 @@ class Jellyfin(Base):
     accessToken = GObject.Property(type=str)
     userId = GObject.Property(type=str)
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._library_cache_loaded = False
+        self._library_cache_refreshing = False
+        self._library_cache_complete = set()
+        self._library_cache_lock = threading.Lock()
+
+    def _get_library_cache_file(self) -> str:
+        return os.path.join(self.getIntegrationDir(), "library-cache-v3.json")
+
+    def _model_cache_type(self, model) -> str:
+        if isinstance(model, models.Album):
+            return "album"
+        if isinstance(model, models.Artist):
+            return "artist"
+        if isinstance(model, models.Playlist):
+            return "playlist"
+        if isinstance(model, models.Song):
+            if model.get_property("isExternalFile") or model.get_property("isRadio"):
+                return ""
+            return "song"
+        return ""
+
+    def _serialize_model(self, model) -> dict:
+        data = {}
+        for prop in model.list_properties():
+            name = prop.get_name()
+            if name == "gdkPaintable":
+                continue
+            value = model.get_property(name)
+            try:
+                json.dumps(value)
+                data[name] = value
+            except TypeError:
+                pass
+        return data
+
+    def _save_library_cache(self):
+        if not self._library_cache_loaded:
+            return
+
+        payload = {
+            "version": 3,
+            "url": self.get_property("url").strip("/"),
+            "userId": self.get_property("userId"),
+            "complete": list(self._library_cache_complete),
+            "models": {}
+        }
+        for model_id, model in list(self.loaded_models.items()):
+            model_type = self._model_cache_type(model)
+            if model_type:
+                payload["models"][model_id] = {
+                    "type": model_type,
+                    "data": self._serialize_model(model)
+                }
+
+        cache_file = self._get_library_cache_file()
+        tmp_file = "{}.tmp".format(cache_file)
+        try:
+            with self._library_cache_lock:
+                with open(tmp_file, "w") as f:
+                    json.dump(payload, f, ensure_ascii=False)
+                os.replace(tmp_file, cache_file)
+        except Exception:
+            try:
+                if os.path.exists(tmp_file):
+                    os.remove(tmp_file)
+            except Exception:
+                pass
+
+    def _load_library_cache(self):
+        cache_file = self._get_library_cache_file()
+        try:
+            with open(cache_file, "r") as f:
+                payload = json.load(f)
+        except Exception:
+            self._library_cache_loaded = True
+            return
+
+        if payload.get("version") != 3:
+            self._library_cache_loaded = True
+            return
+        if payload.get("url") != self.get_property("url").strip("/"):
+            self._library_cache_loaded = True
+            return
+        if payload.get("userId") != self.get_property("userId"):
+            self._library_cache_loaded = True
+            return
+
+        model_classes = {
+            "album": models.Album,
+            "artist": models.Artist,
+            "playlist": models.Playlist,
+            "song": models.Song
+        }
+        for model_id, cached in payload.get("models", {}).items():
+            model_class = model_classes.get(cached.get("type"))
+            data = cached.get("data")
+            if model_class and isinstance(data, dict):
+                if model_id in self.loaded_models:
+                    self.loaded_models.get(model_id).update_data(**data)
+                else:
+                    self.loaded_models[model_id] = model_class(**data)
+
+        self._library_cache_loaded = True
+        self._library_cache_complete = set(payload.get("complete", []))
+
+    def _cache_model(self, model_id:str, model_type:str, data:dict):
+        model_classes = {
+            "album": models.Album,
+            "artist": models.Artist,
+            "playlist": models.Playlist,
+            "song": models.Song
+        }
+        model_class = model_classes.get(model_type)
+        if not model_id or not model_class:
+            return
+
+        if model := self.loaded_models.get(model_id):
+            model.update_data(**data)
+        else:
+            self.loaded_models[model_id] = model_class(**data)
+
+    def _song_data_from_item(self, song:dict) -> dict:
+        return {
+            "id": song.get("Id"),
+            "title": song.get("Name"),
+            "album": song.get("Album"),
+            "albumId": song.get("AlbumId"),
+            "artist": song.get("AlbumArtist"),
+            "artistId": (song.get("ArtistItems") or [{}])[0].get("Id"),
+            "duration": int(song.get("RunTimeTicks", 0) / 10000000),
+            "artists": [{"id": art.get("Id"), "name": art.get("Name")} for art in song.get("ArtistItems", [])],
+            "starred": song.get("UserData", {}).get("IsFavorite", False),
+            "track": song.get("IndexNumber") or 0,
+            "discNumber": song.get("ParentIndexNumber") or 0,
+            "albumGain": song.get("AlbumNormalizationGain", song.get("NormalizationGain")) or 0.0,
+            "trackGain": song.get("NormalizationGain") or 0.0
+        }
+
+    def _album_artist_data_from_item(self, artist:dict) -> dict:
+        return {
+            "id": artist.get("Id"),
+            "name": artist.get("Name"),
+            "albumCount": artist.get("AlbumCount") or artist.get("ChildCount") or 0,
+            "starred": artist.get("UserData", {}).get("IsFavorite", False),
+            "biography": artist.get("Overview", ""),
+            "similarArtist": [{"id": art.get("Id"), "name": art.get("Name")} for art in artist.get("SimilarItems", [])]
+        }
+
+    def _album_artist_album_data(self, artist_id:str) -> dict:
+        albums = self.make_request(
+            action="Users/{userId}/Items",
+            mode="GET",
+            params={
+                "AlbumArtistIds": artist_id,
+                "IncludeItemTypes": "MusicAlbum",
+                "Recursive": "true"
+            }
+        ).get("Items", [])
+
+        return {
+            "albumCount": len(albums),
+            "album": [{"id": album.get("Id"), "name": album.get("Name")} for album in albums]
+        }
+
+    def _cached_album_artist_album_data(self, artist_id:str) -> dict:
+        albums = []
+        for model in list(self.loaded_models.values()):
+            if not isinstance(model, models.Album):
+                continue
+            if model.get_property("artistId") == artist_id:
+                albums.append({"id": model.get_property("id"), "name": model.get_property("name")})
+
+        return {
+            "albumCount": len(albums),
+            "album": albums
+        }
+
+    def _cached_ids(self, model_type:str, query:str="", count:int=0, offset:int=0) -> list:
+        if not self._library_cache_loaded:
+            return []
+
+        query = query.casefold()
+        matches = []
+        for model_id, model in list(self.loaded_models.items()):
+            if self._model_cache_type(model) != model_type:
+                continue
+            if query:
+                haystack = []
+                if isinstance(model, models.Song):
+                    haystack = [model.title, model.album, model.artist]
+                    haystack.extend([artist.get("name") for artist in model.artists or []])
+                elif isinstance(model, models.Album):
+                    haystack = [model.name, model.artist]
+                    haystack.extend([artist.get("name") for artist in model.artists or []])
+                elif isinstance(model, models.Artist):
+                    haystack = [model.name]
+                if query not in " ".join([value or "" for value in haystack]).casefold():
+                    continue
+            matches.append(model_id)
+
+        if count:
+            return matches[offset:offset+count]
+        return matches[offset:]
+
+    def _refresh_library_cache(self) -> bool:
+        if self._library_cache_refreshing:
+            return False
+        self._library_cache_refreshing = True
+        try:
+            results = self.search("", artistCount=100000, albumCount=100000, songCount=100000, prefer_cache=False)
+            for model_type in ("artist", "album", "song"):
+                if results.get(model_type):
+                    self._library_cache_complete.add(model_type)
+            if self.getPlaylists(prefer_cache=False):
+                self._library_cache_complete.add("playlist")
+            self._save_library_cache()
+            return True
+        finally:
+            self._library_cache_refreshing = False
+
+    def syncLibrary(self) -> bool:
+        if self._library_cache_refreshing:
+            return False
+
+        if not self._library_cache_loaded:
+            self._load_library_cache()
+        return self._refresh_library_cache()
+
     def get_base_header(self) -> dict:
         headers = {
             "Authorization": self.AUTH_HEADER
@@ -94,7 +324,8 @@ class Jellyfin(Base):
         pass
 
     def on_login(self):
-        pass
+        self._load_library_cache()
+        threading.Thread(target=self._refresh_library_cache).start()
 
     def get_stream_url(self, song_id:str) -> str:
         model = self.loaded_models.get(song_id)
@@ -200,6 +431,17 @@ class Jellyfin(Base):
         return self.get_property('accessToken') and self.get_property('userId')
 
     def getAlbumList(self, list_type:str="recent", size:int=10, offset:int=0) -> list:
+        cached_albums = self._cached_ids("album", count=size, offset=offset)
+        if list_type == "random" and cached_albums:
+            all_cached_albums = self._cached_ids("album")
+            return random.sample(all_cached_albums, min(size, len(all_cached_albums)))
+        if list_type == "starred" and cached_albums:
+            starred_albums = [
+                model_id for model_id in self._cached_ids("album")
+                if self.loaded_models.get(model_id).get_property("starred")
+            ]
+            return starred_albums[offset:offset+size]
+
         params = {
             "IncludeItemTypes": "MusicAlbum",
             "Recursive": "true",
@@ -254,9 +496,14 @@ class Jellyfin(Base):
             )
             self.loaded_models[album.get("Id")] = album_model
             id_list.append(album.get("Id"))
+        self._save_library_cache()
         return id_list
 
     def getArtists(self, size:int=10) -> list:
+        cached_artists = self._cached_ids("artist", count=size)
+        if cached_artists:
+            return cached_artists
+
         params = {
             "Limit": size,
             "Recursive": "true",
@@ -265,36 +512,26 @@ class Jellyfin(Base):
             "SortOrder": "Ascending"
         }
         response = self.make_request(
-            action='Artists',
+            action='Artists/AlbumArtists',
             mode='GET',
             params=params
         )
         id_list = []
         for artist in response.get('Items', []):
-            albums = self.make_request(
-                action="Users/{userId}/Items",
-                mode="GET",
-                params={
-                    "ArtistIds": artist.get("Id"),
-                    "IncludeItemTypes": "MusicAlbum",
-                    "Recursive": "true"
-                }
-            ).get("Items", [])
-
             artist_model = models.Artist(
-                id=artist.get('Id'),
-                name=artist.get('Name'),
-                albumCount=len(albums),
-                album=[{'id': alb.get("Id"), 'name': alb.get("Name")} for alb in albums],
-                starred=artist.get("UserData", {}).get("IsFavorite", False),
-                biography=artist.get("Overview", ""),
-                similarArtist=[{'id': art.get("Id"), 'name': art.get("Name")} for art in artist.get("SimilarItems", [])]
+                **self._album_artist_data_from_item(artist),
+                **self._album_artist_album_data(artist.get("Id"))
             )
             self.loaded_models[artist.get("Id")] = artist_model
             id_list.append(artist.get("Id"))
+        self._save_library_cache()
         return id_list
 
-    def getPlaylists(self) -> list:
+    def getPlaylists(self, prefer_cache:bool=True) -> list:
+        cached_playlists = self._cached_ids("playlist")
+        if prefer_cache and cached_playlists and "playlist" in self._library_cache_complete:
+            return cached_playlists
+
         params = {
             "IncludeItemTypes": "Playlist",
             "Recursive": "true",
@@ -328,6 +565,7 @@ class Jellyfin(Base):
             )
             self.loaded_models[playlist.get("Id")] = playlist_model
             id_list.append(playlist.get("Id"))
+        self._save_library_cache()
         return id_list
 
     def getStarredSongs(self) -> list:
@@ -357,7 +595,7 @@ class Jellyfin(Base):
                 action='Users/{userId}/Items',
                 mode="GET",
                 params={
-                    "ParentId": model_id,
+                    "AlbumArtistIds": model_id,
                     "IncludeItemTypes": "MusicAlbum",
                     "Recursive": "true",
                     "Fields": "ItemCounts"
@@ -371,10 +609,14 @@ class Jellyfin(Base):
                 album=[{"id": alb.get("Id"), "name": alb.get("Name")} for alb in albums],
                 starred=artist.get("UserData", {}).get("IsFavorite", False),
                 biography=artist.get("Overview", ""),
-                similarArtists=[{"id": art.get("Id"), "name": art.get("Name")} for art in artist.get("SimilarItems", [])]
+                similarArtist=[{"id": art.get("Id"), "name": art.get("Name")} for art in artist.get("SimilarItems", [])]
             )
+            self._save_library_cache()
 
-        if model_id not in self.loaded_models or force_update:
+        model = self.loaded_models.get(model_id)
+        needs_album_count = model is not None and model.get_property("albumCount") == 0
+
+        if model_id not in self.loaded_models or force_update or needs_album_count:
             if model_id not in self.loaded_models:
                 self.loaded_models[model_id] = models.Artist(id=model_id)
             if use_threading:
@@ -422,6 +664,7 @@ class Jellyfin(Base):
                 song=[{"id": song.get("Id"), "name": song.get("Name")} for song in songs],
                 starred=album.get("UserData", {}).get("IsFavorite", False)
             )
+            self._save_library_cache()
 
         if model_id not in self.loaded_models or force_update:
             if model_id not in self.loaded_models:
@@ -461,6 +704,7 @@ class Jellyfin(Base):
                 duration=duration,
                 entry=[{"id": song.get("Id"), "name": song.get("Name")} for song in songs]
             )
+            self._save_library_cache()
 
         if model_id not in self.loaded_models or force_update:
             if model_id not in self.loaded_models:
@@ -484,23 +728,8 @@ class Jellyfin(Base):
                 params=params
             )
 
-            duration = int(song.get("RunTimeTicks", 0) / 10000000)
-
-            self.loaded_models.get(model_id).update_data(
-                id=song.get("Id"),
-                title=song.get("Name"),
-                album=song.get("Album"),
-                albumId=song.get("AlbumId"),
-                artist=song.get("AlbumArtist"),
-                artistId=(song.get("ArtistItems") or [{}])[0].get("Id"),
-                duration=duration,
-                artists=[{"id": art.get("Id"), "name": art.get("Name")} for art in song.get("ArtistItems", [])],
-                starred=song.get("UserData", {}).get("IsFavorite", False),
-                track=song.get("IndexNumber") or 0,
-                discNumber=song.get("ParentIndexNumber") or 0,
-                albumGain=song.get("AlbumNormalizationGain", song.get("NormalizationGain")) or 0.0,
-                trackGain=song.get("NormalizationGain") or 0.0
-            )
+            self.loaded_models.get(model_id).update_data(**self._song_data_from_item(song))
+            self._save_library_cache()
 
         if model_id not in self.loaded_models or force_update:
             if model_id not in self.loaded_models:
@@ -518,7 +747,12 @@ class Jellyfin(Base):
             action_keys={"id": model_id},
             mode='POST'
         )
-        return response.get('IsFavorite', False)
+        is_favorite = response.get('IsFavorite', False)
+        if is_favorite:
+            if model := self.loaded_models.get(model_id):
+                model.set_property('starred', True)
+            self._save_library_cache()
+        return is_favorite
 
     def unstar(self, model_id:str) -> bool:
         response = self.make_request(
@@ -526,7 +760,12 @@ class Jellyfin(Base):
             action_keys={"id": model_id},
             mode='DELETE'
         )
-        return not response.get('IsFavorite', False)
+        is_unstarred = not response.get('IsFavorite', False)
+        if is_unstarred:
+            if model := self.loaded_models.get(model_id):
+                model.set_property('starred', False)
+            self._save_library_cache()
+        return is_unstarred
 
     def getPlayQueue(self) -> tuple:
         QUEUEFILE = os.path.join(self.getIntegrationDir(), 'queue.json')
@@ -604,23 +843,13 @@ class Jellyfin(Base):
 
         id_list = []
         for song in songs:
-            duration = int(song.get("RunTimeTicks", 0) / 10000000)
-            properties = {
-                "id": song.get("Id"),
-                "title": song.get("Name"),
-                "album": song.get("Album"),
-                "albumId": song.get("AlbumId"),
-                "artist": song.get("AlbumArtist"),
-                "artistId": (song.get("ArtistItems") or [{}])[0].get("Id"),
-                "duration": duration,
-                "artists": [{"id": art.get("Id"), "name": art.get("Name")} for art in song.get("ArtistItems", [])],
-                "starred": song.get("UserData", {}).get("IsFavorite", False)
-            }
+            properties = self._song_data_from_item(song)
             if song.get("Id") in self.loaded_models:
                 self.loaded_models.get(song.get("Id")).update_data(**properties)
             else:
                 self.loaded_models[song.get("Id")] = models.Song(**properties)
             id_list.append(song.get("Id"))
+        self._save_library_cache()
         return id_list
 
     def getRandomSongs(self, size:int=20) -> list:
@@ -639,23 +868,13 @@ class Jellyfin(Base):
 
         id_list = []
         for song in songs:
-            duration = int(song.get("RunTimeTicks", 0) / 10000000)
-            properties = {
-                "id": song.get("Id"),
-                "title": song.get("Name"),
-                "album": song.get("Album"),
-                "albumId": song.get("AlbumId"),
-                "artist": song.get("AlbumArtist"),
-                "artistId": (song.get("ArtistItems") or [{}])[0].get("Id"),
-                "duration": duration,
-                "artists": [{"id": art.get("Id"), "name": art.get("Name")} for art in song.get("ArtistItems", [])],
-                "starred": song.get("UserData", {}).get("IsFavorite", False)
-            }
+            properties = self._song_data_from_item(song)
             if song.get("Id") in self.loaded_models:
                 self.loaded_models.get(song.get("Id")).update_data(**properties)
             else:
                 self.loaded_models[song.get("Id")] = models.Song(**properties)
             id_list.append(song.get("Id"))
+        self._save_library_cache()
         return id_list
 
     def getLyrics(self, songId:str) -> dict:
@@ -685,8 +904,26 @@ class Jellyfin(Base):
                 }
         return {'type': 'not-found'}
 
-    def search(self, query:str, artistCount:int=0, artistOffset:int=0, albumCount:int=0, albumOffset:int=0, songCount:int=0, songOffset:int=0) -> dict:
-        def fetch_type(item_type:str, limit:int, offset:int, fields:str=""):
+    def search(self, query:str, artistCount:int=0, artistOffset:int=0, albumCount:int=0, albumOffset:int=0, songCount:int=0, songOffset:int=0, prefer_cache:bool=True) -> dict:
+        if prefer_cache:
+            cached = {
+                "artist": self._cached_ids("artist", query, artistCount, artistOffset) if artistCount else [],
+                "album": self._cached_ids("album", query, albumCount, albumOffset) if albumCount else [],
+                "song": self._cached_ids("song", query, songCount, songOffset) if songCount else []
+            }
+            artist_ready = "artist" in self._library_cache_complete or len(cached["artist"]) >= artistCount
+            album_ready = "album" in self._library_cache_complete or len(cached["album"]) >= albumCount
+            song_ready = "song" in self._library_cache_complete or len(cached["song"]) >= songCount
+            if (
+                (not artistCount or (cached["artist"] and artist_ready)) and
+                (not albumCount or (cached["album"] and album_ready)) and
+                (not songCount or (cached["song"] and song_ready))
+            ):
+                return cached
+
+        def fetch_items(item_type:str, limit:int, offset:int, fields:str=""):
+            if limit <= 0:
+                return []
             return self.make_request(
                 action='Users/{userId}/Items',
                 mode="GET",
@@ -700,10 +937,58 @@ class Jellyfin(Base):
                 }
             ).get('Items', [])
 
+        def fetch_album_artists(limit:int, offset:int):
+            if limit <= 0:
+                return []
+            return self.make_request(
+                action='Artists/AlbumArtists',
+                mode='GET',
+                params={
+                    "SearchTerm": query,
+                    "Recursive": "true",
+                    "Limit": limit,
+                    "StartIndex": offset,
+                    "Fields": "Overview,SimilarItems,UserData",
+                    "SortBy": "SortName",
+                    "SortOrder": "Ascending"
+                }
+            ).get('Items', [])
+
+        artists = fetch_album_artists(artistCount, artistOffset)
+        albums = fetch_items("MusicAlbum", albumCount, albumOffset, "ArtistItems,IsFavorite,RunTimeTicks")
+        songs = fetch_items("Audio", songCount, songOffset, "ArtistItems,AlbumId,RunTimeTicks,UserData,IndexNumber,ParentIndexNumber")
+
+        for album in albums:
+            artists_list = album.get("ArtistItems", [])
+            self._cache_model(album.get("Id"), "album", {
+                "id": album.get("Id"),
+                "name": album.get("Name"),
+                "artist": artists_list[0].get("Name") if artists_list else album.get("AlbumArtist") or "Unknown",
+                "artistId": artists_list[0].get("Id") if artists_list else "",
+                "artists": [{"id": art.get("Id"), "name": art.get("Name")} for art in artists_list],
+                "starred": album.get("UserData", {}).get("IsFavorite", False)
+            })
+
+        for song in songs:
+            self._cache_model(song.get("Id"), "song", self._song_data_from_item(song))
+
+        for artist in artists:
+            artist_data = self._album_artist_data_from_item(artist)
+            if not artist_data.get("albumCount"):
+                album_data = self._cached_album_artist_album_data(artist.get("Id"))
+                if album_data.get("albumCount"):
+                    artist_data.update(album_data)
+                else:
+                    artist_data.update(self._album_artist_album_data(artist.get("Id")))
+            self._cache_model(artist.get("Id"), "artist", artist_data)
+
+        if artists or albums or songs:
+            self._save_library_cache()
+
         return {
-            'artist': [item.get("Id") for item in fetch_type("MusicArtist", artistCount, artistOffset)],
-            'album': [item.get("Id") for item in fetch_type("MusicAlbum", albumCount, albumOffset)],
-            'song': [item.get("Id") for item in fetch_type("Audio", songCount, songOffset)]
+            'artist': [item.get("Id") for item in artists],
+            'album': [item.get("Id") for item in albums],
+            'song': [item.get("Id") for item in songs]
         }
 
     def getInternetRadioStations(self) -> list:
@@ -868,7 +1153,7 @@ class Jellyfin(Base):
             action='Users/{userId}/Items',
             mode='GET',
             params={
-                'ArtistIds': artist_id,
+                'AlbumArtistIds': artist_id,
                 'IncludeItemTypes': 'Audio',
                 'SortBy': 'PlayCount',
                 'SortOrder': 'Descending',
@@ -934,5 +1219,3 @@ class Jellyfin(Base):
             pass
 
         return server_information
-
-

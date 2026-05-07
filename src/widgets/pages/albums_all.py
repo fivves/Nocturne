@@ -16,11 +16,14 @@ class AlbumsAllPage(Adw.NavigationPage):
     wrapbox_el = Gtk.Template.Child()
     end_stack = Gtk.Template.Child()
     scrolledwindow = Gtk.Template.Child()
-    offset = 0
-    searching = False
-
     def __init__(self):
         super().__init__()
+        self.offset = 0
+        self.searching = False
+        self.search_token = 0
+        self.query = ""
+        self.list_rows = {}
+        self.grid_rows = {}
         Gio.Settings(schema_id="com.jeffser.Nocturne").bind(
             "default-view-mode",
             self.toggle_group_el,
@@ -41,44 +44,55 @@ class AlbumsAllPage(Adw.NavigationPage):
         self.list_el.remove_all()
         for el in list(self.wrapbox_el):
             self.wrapbox_el.remove(el)
+        self.list_rows = {}
+        self.grid_rows = {}
 
-    def search(self):
+    def append_results(self, album_ids:list, token:int):
+        if token != self.search_token:
+            return
+
+        for album_id in album_ids:
+            if album_id in self.list_rows:
+                self.list_rows[album_id].set_visible(True)
+            else:
+                row = AlbumRow(album_id)
+                self.list_rows[album_id] = row
+                self.list_el.append(row)
+
+            if album_id in self.grid_rows:
+                self.grid_rows[album_id].set_visible(True)
+            else:
+                button = AlbumButton(album_id)
+                self.grid_rows[album_id] = button
+                self.wrapbox_el.append(button)
+
+        self.end_stack.set_visible_child_name('end' if len(album_ids) < 30 else 'loading')
+        self.offset += 30
+        self.searching = False
+        self.update_visibility()
+
+    def search(self, token=None):
         if self.searching:
             return
         self.searching = True
-        query = self.search_entry.get_text()
+        token = self.search_token if token is None else token
         integration = get_current_integration()
         search_results = integration.search(
-            query=query,
+            query=self.query,
             albumCount=30,
             albumOffset=self.offset
         )
-        for album_id in search_results.get('album'):
-            results_list = [row for row in list(self.list_el) if row.id == album_id]
-            if len(results_list) > 0:
-                GLib.idle_add(results_list[0].set_visible, True)
-            else:
-                row = AlbumRow(album_id)
-                GLib.idle_add(self.list_el.append, row)
-
-            results_wrapbox = [button for button in list(self.wrapbox_el) if button.id == album_id]
-            if len(results_wrapbox) > 0:
-                GLib.idle_add(results_wrapbox[0].set_visible, True)
-            else:
-                button = AlbumButton(album_id)
-                GLib.idle_add(self.wrapbox_el.append, button)
-
-        GLib.idle_add(self.end_stack.set_visible_child_name, 'end' if len(search_results.get('album')) < 30 else 'loading')
-        self.offset += 30
-        self.searching = False
-        GLib.idle_add(self.update_visibility)
+        GLib.idle_add(self.append_results, search_results.get('album'), token)
 
     @Gtk.Template.Callback()
     def on_search(self, search_entry):
         self.offset = 0
-        for widget in list(self.list_el) + list(self.wrapbox_el):
+        self.search_token += 1
+        self.query = search_entry.get_text()
+        self.searching = False
+        for widget in list(self.list_rows.values()) + list(self.grid_rows.values()):
             widget.set_visible(False)
-        threading.Thread(target=self.search).start()
+        threading.Thread(target=self.search, args=(self.search_token,)).start()
 
     @Gtk.Template.Callback()
     def scroll_edge_reached(self, scrolledwindow, pos):

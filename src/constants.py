@@ -119,6 +119,8 @@ def get_song_info_from_file(file_path:str, star_dict:dict={}, is_external_file:b
     if not tag:
         return None
     album_artist = (tag.albumartist or tag.artist or "").split(';')[0].strip()
+    artists = [art.strip() for art in (tag.artist or album_artist or _("Unknown Artist")).split(';') if art.strip()]
+    album_artist = album_artist or artists[0]
     song = {
         'path': file_path,
         'coverArt': file_path,
@@ -130,7 +132,7 @@ def get_song_info_from_file(file_path:str, star_dict:dict={}, is_external_file:b
             'id': "ARTIST:{}".format(art.strip()),
             'name': art.strip(),
             'starred': star_dict.get("ARTIST:{}".format(art.strip()))
-        } for art in tag.artist.split(';')],
+        } for art in artists],
         'track': tag.track or 0,
         'isExternalFile': is_external_file,
         'discNumber': tag.disc or 0,
@@ -430,4 +432,3 @@ CONTEXT_MANAGED_NAVIDROME_SERVER = {
         "action-name": "app.delete_navidrome_server"
     }
 }
-

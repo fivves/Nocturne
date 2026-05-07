@@ -31,6 +31,10 @@ class Base(GObject.Object):
     # Show spinner in sidebar with message as tooltip text if set
     loadingMessage = GObject.Property(type=str)
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.loaded_models = {'currentSong': models.CurrentSong()}
+
     def open_json(self, filename:str, is_list:bool=False) -> dict | list:
         # loads a JSON file from the current integration
         try:

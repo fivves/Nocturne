@@ -4,6 +4,8 @@ using Adw 1;
 template $NocturneCarousel: Gtk.Box {
   orientation: vertical;
   spacing: 10;
+  hexpand: true;
+  halign: fill;
 
   Gtk.Button header_button {
     styles [
@@ -23,6 +25,9 @@ template $NocturneCarousel: Gtk.Box {
   }
 
   Gtk.Overlay {
+    hexpand: true;
+    halign: fill;
+
     [overlay]
     Adw.Bin {
       halign: start;
@@ -43,23 +48,65 @@ template $NocturneCarousel: Gtk.Box {
       ]
     }
 
-    child: Adw.Carousel list_el {
+    [overlay]
+    Gtk.Button previous_button {
+      icon-name: "go-previous-symbolic";
+      styles [
+        "circular",
+        "osd"
+      ]
+      tooltip-text: _("Previous");
+      visible: false;
+      halign: start;
+      valign: center;
+      margin-start: 12;
+      clicked => $scroll_previous();
+      accessibility {
+        label: _("Previous carousel page");
+      }
+    }
+
+    [overlay]
+    Gtk.Button next_button {
+      icon-name: "go-next-symbolic";
+      styles [
+        "circular",
+        "osd"
+      ]
+      tooltip-text: _("Next");
+      visible: false;
+      halign: end;
+      valign: center;
+      margin-end: 12;
+      clicked => $scroll_next();
+      accessibility {
+        label: _("Next carousel page");
+      }
+    }
+
+    child: Gtk.ScrolledWindow scrolled_el {
       hexpand: true;
       halign: fill;
-      spacing: 10;
-      allow-long-swipes: true;
-      allow-mouse-drag: true;
-      allow-scroll-wheel: false;
+      propagate-natural-width: false;
+      hscrollbar-policy: external;
+      vscrollbar-policy: never;
 
       Gtk.EventControllerScroll {
         scroll => $on_scroll();
         flags: both_axes;
       }
 
-      Adw.Spinner {
-        height-request: 240;
-        width-request: 240;
-      }
+      child: Gtk.Box list_el {
+        orientation: horizontal;
+        spacing: 10;
+        margin-start: 10;
+        margin-end: 10;
+
+        Adw.Spinner {
+          height-request: 240;
+          width-request: 240;
+        }
+      };
     };
   }
 }

@@ -309,6 +309,7 @@ class Player(EventAdapter):
         self.last_song_id = None
         self.pause_next_change = False
         self.last_gst_state_type = -1
+        self.processing_spectrum_message = False
         integration = get_current_integration()
         integration.connect_to_model('currentSong', 'songId', self.song_changed)#lambda song_id: threading.Thread(target=self.song_changed, args=(song_id,)).start())
 
@@ -416,23 +417,27 @@ class Player(EventAdapter):
                 )
 
     def handle_spectrum_message(self, struct):
-        serialized = struct.serialize_full(Gst.SerializeFlags.NONE)
-        channels_str = serialized.split('< < ')[1].split(' > >;')[0].replace('(float)', '').split(' >, < ')
-        channels = []
-        for c in channels_str:
-            channels.append([float(m.strip()) for m in c.split(', ')[:int(self.spectrum.get_property('bands')/2)]])
-        integration = get_current_integration()
-        timestamp = struct.get_uint64('stream-time')[1] / 1000000000
-        magnitudes = [(60-abs(m)) / 60 * self.settings.get_value("volume").unpack() for m in channels[0] + list(reversed(channels[1]))]
-        if timestamp and magnitudes:
-            if not integration.loaded_models.get('currentSong').get_property('magnitudes'):
-                integration.loaded_models.get('currentSong').set_property('magnitudes', {})
-            integration.loaded_models.get('currentSong').magnitudes[timestamp] = magnitudes
+        try:
+            serialized = struct.serialize_full(Gst.SerializeFlags.NONE)
+            channels_str = serialized.split('< < ')[1].split(' > >;')[0].replace('(float)', '').split(' >, < ')
+            channels = []
+            for c in channels_str:
+                channels.append([float(m.strip()) for m in c.split(', ')[:int(self.spectrum.get_property('bands')/2)]])
+            integration = get_current_integration()
+            timestamp = struct.get_uint64('stream-time')[1] / 1000000000
+            magnitudes = [(60-abs(m)) / 60 * self.settings.get_value("volume").unpack() for m in channels[0] + list(reversed(channels[1]))]
+            if timestamp and magnitudes:
+                if not integration.loaded_models.get('currentSong').get_property('magnitudes'):
+                    integration.loaded_models.get('currentSong').set_property('magnitudes', {})
+                integration.loaded_models.get('currentSong').magnitudes[timestamp] = magnitudes
+        finally:
+            self.processing_spectrum_message = False
 
     def on_message(self, bus, message):
         if message.src == self.spectrum:
             struct = message.get_structure()
-            if struct and struct.get_name() == "spectrum" and self.settings.get_value('show-visualizer').unpack():
+            if struct and struct.get_name() == "spectrum" and self.settings.get_value('show-visualizer').unpack() and not self.processing_spectrum_message:
+                self.processing_spectrum_message = True
                 threading.Thread(target=self.handle_spectrum_message, args=(struct,)).start()
         else:
             if message.type == Gst.MessageType.STATE_CHANGED:

@@ -1,0 +1,6 @@
+option(
+  'update_icon_cache',
+  type: 'boolean',
+  value: true,
+  description: 'Update the icon theme cache during meson install',
+)

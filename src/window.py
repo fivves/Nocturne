@@ -51,6 +51,7 @@ class NocturneWindow(Adw.ApplicationWindow):
     main_stack = Gtk.Template.Child()
     footer = Gtk.Template.Child()
     toast_overlay = Gtk.Template.Child()
+    sync_button_el = Gtk.Template.Child()
     downloads_button_el = Gtk.Template.Child()
 
     @Gtk.Template.Callback()
@@ -171,6 +172,10 @@ class NocturneWindow(Adw.ApplicationWindow):
         self.sidebar_queue_page.setup()
         self.downloads_button_el.setup()
         integration = get_current_integration()
+        sync_available = integration.__gtype_name__ == 'NocturneIntegrationJellyfin'
+        self.sync_button_el.set_visible(sync_available)
+        if action := self.get_application().lookup_action("sync_jellyfin_server"):
+            action.set_enabled(sync_available)
         integration.connect_to_model('currentSong', 'songId', self.song_changed)
 
     def song_changed(self, songId:str):
@@ -192,6 +197,7 @@ class NocturneWindow(Adw.ApplicationWindow):
         self.create_action(actions.replace_root_page)
         self.create_action(actions.visit_url)
         self.create_action(actions.toggle_star)
+        self.create_action(actions.sync_jellyfin_server, parameter_type=None)
         self.create_action(actions.logout, parameter_type=None)
         self.create_action(actions.show_external_file_warning, parameter_type=None)
         self.create_action(actions.update_navidrome_server, parameter_type=None)
@@ -201,6 +207,7 @@ class NocturneWindow(Adw.ApplicationWindow):
 
         self.create_action(actions.player_play, parameter_type=None)
         self.create_action(actions.player_pause, parameter_type=None)
+        self.create_action(actions.player_toggle, shortcuts=['space'], parameter_type=None)
         self.create_action(actions.player_next, parameter_type=None)
         self.create_action(actions.player_previous, parameter_type=None)
 
@@ -320,4 +327,3 @@ class NocturneWindow(Adw.ApplicationWindow):
                 GLib.idle_add(self.main_bottom_sheet.set_open, False)
         if not song_playing:
             GLib.idle_add(self.main_bottom_sheet.set_open, False)
-

@@ -8,6 +8,7 @@ import requests, random, threading, io, pathlib, re, json, os, time, uuid, pwd, 
 from PIL import Image
 from tinytag import TinyTag
 from ..constants import DOWNLOADS_DIR, get_song_info_from_file
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 class Local(Base):
     __gtype_name__ = 'NocturneIntegrationLocal'
@@ -25,23 +26,120 @@ class Local(Base):
     }
     limitations = ('no-max-bitrate',)
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._model_lock = threading.Lock()
+        self._cover_art_loading = set()
+        self._cover_art_lock = threading.Lock()
+        self._song_ids = []
+        self._album_ids = []
+        self._artist_ids = []
+        self._search_text = {}
+
+    def _rebuild_indexes(self):
+        song_ids = []
+        album_ids = []
+        artist_ids = []
+        search_text = {}
+
+        for model_id, model in self.loaded_models.items():
+            if model_id.startswith('SONG:'):
+                song_ids.append(model_id)
+                search_text[model_id] = ' '.join([
+                    model.get_property('title') or '',
+                    model.get_property('album') or '',
+                    model.get_property('artist') or ''
+                ]).casefold()
+            elif model_id.startswith('ALBUM:'):
+                album_ids.append(model_id)
+                search_text[model_id] = ' '.join([
+                    model.get_property('name') or '',
+                    model.get_property('artist') or ''
+                ]).casefold()
+            elif model_id.startswith('ARTIST:'):
+                artist_ids.append(model_id)
+                search_text[model_id] = (model.get_property('name') or '').casefold()
+
+        self._song_ids = song_ids
+        self._album_ids = album_ids
+        self._artist_ids = artist_ids
+        self._search_text = search_text
+
+    def _load_song_metadata(self, song_id:str, star_dict:dict):
+        song_model = self.loaded_models.get(song_id)
+        if not song_model:
+            return
+
+        song = get_song_info_from_file(song_model.get_property("path"), star_dict=star_dict)
+        if not song:
+            return
+
+        song["id"] = song_id
+        song["starred"] = song.get("id") in star_dict
+
+        album_id = song.get('albumId') or 'ALBUM:NO_ALBUM:{}'.format(song.get('artists')[0].get('id'))
+        artist_id = song.get('artistId')
+
+        with self._model_lock:
+            song_model.update_data(**song)
+
+            if album_id:
+                if album_id in self.loaded_models:
+                    album_song_list = self.loaded_models.get(album_id).song
+                    if {'id': song_id} not in album_song_list:
+                        album_song_list.append({'id': song_id})
+                else:
+                    self.loaded_models[album_id] = models.Album(
+                        id=album_id,
+                        coverArt=song.get('path'),
+                        name=song.get('album') or _("No Album"),
+                        artist=song.get('artist'),
+                        artistId=song.get('artistId'),
+                        song=[{'id': song_id}],
+                        starred=album_id in star_dict
+                    )
+
+            if artist_id:
+                if artist_id not in self.loaded_models:
+                    self.loaded_models[artist_id] = models.Artist(
+                        id=artist_id,
+                        coverArt=song.get('path'),
+                        name=song.get('artist'),
+                        album=[],
+                        albumCount=0,
+                        starred=artist_id in star_dict
+                    )
+
+                album_list = self.loaded_models.get(artist_id).album
+                if album_id and not any(album.get('id') == album_id for album in album_list):
+                    album_list.append({'id': album_id})
+                    self.loaded_models.get(artist_id).albumCount += 1
+
     def on_login(self):
         # Goes through the whole directory retrieving all the metadata
-        audio_data_list = []
         path_obj = pathlib.Path(self.get_property('libraryDir'))
 
         def load_songs():
             # load songs, albums, artists
-            threads = []
             self.set_property('loadingMessage', _("Loading Songs"))
+            star_dict = self.open_json('stars.json')
+            song_ids = []
             for file_path in path_obj.rglob("*"):
                 if file_path.suffix.lower() in ('.mp3', '.flac', '.m4a', '.ogg', '.wav'):
                     song_id = 'SONG:{}'.format(file_path)
                     self.loaded_models[song_id] = models.Song(id=song_id, path=file_path, coverArt=file_path)
-                    threads.append(threading.Thread(target=self.verifySong, args=(song_id,)))
-                    threads[-1].start()
-            for t in threads:
-                t.join()
+                    song_ids.append(song_id)
+
+            worker_count = min(8, max(2, (os.cpu_count() or 2)))
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = [executor.submit(self._load_song_metadata, song_id, star_dict) for song_id in song_ids]
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception:
+                        pass
+
+            self._rebuild_indexes()
             self.set_property('loadingMessage', "")
         threading.Thread(target=load_songs).start()
 
@@ -122,6 +220,21 @@ class Local(Base):
                 pass
         return None
 
+    def _load_cover_art_async(self, model_id:str):
+        with self._cover_art_lock:
+            if model_id in self._cover_art_loading:
+                return
+            self._cover_art_loading.add(model_id)
+
+        def run():
+            try:
+                self.getCoverArt(model_id)
+            finally:
+                with self._cover_art_lock:
+                    self._cover_art_loading.discard(model_id)
+
+        threading.Thread(target=run).start()
+
     def ping(self) -> bool:
         # Always true, it checks it at login
         return True
@@ -129,11 +242,12 @@ class Local(Base):
     def getAlbumList(self, list_type:str="recent", size:int=10, offset:int=0) -> list:
         album_list = []
         if list_type == "random":
-            album_list = [model_id for model_id in list(self.loaded_models) if model_id.startswith('ALBUM:')]
+            album_list = list(self._album_ids or [model_id for model_id in list(self.loaded_models) if model_id.startswith('ALBUM:')])
             random.shuffle(album_list)
         elif list_type == "newest":
             albums = {} # id : creation_time
-            for model in [self.loaded_models.get(model_id) for model_id in list(self.loaded_models) if model_id.startswith('ALBUM:')]:
+            album_ids = self._album_ids or [model_id for model_id in list(self.loaded_models) if model_id.startswith('ALBUM:')]
+            for model in [self.loaded_models.get(model_id) for model_id in album_ids]:
                 albums[model.get_property('id')] = pathlib.Path(model.get_property('coverArt')).stat().st_ctime
             album_list = sorted(albums, key=lambda x: albums.get(x), reverse=True)
         elif list_type in ("frequent", "recent"):
@@ -161,13 +275,15 @@ class Local(Base):
             elif list_type == "recent":
                 album_list = sorted(album_views, key=lambda x: album_views.get(x).get('last_play'), reverse=True)
         elif list_type == "starred":
-            album_list = [model_id for model_id, model in self.loaded_models.items() if model_id.startswith('ALBUM:') and model.starred]
+            album_ids = self._album_ids or [model_id for model_id in list(self.loaded_models) if model_id.startswith('ALBUM:')]
+            album_list = [model_id for model_id in album_ids if self.loaded_models.get(model_id).starred]
         else:
-            album_list = [model_id for model_id in list(self.loaded_models) if model_id.startswith('ALBUM:')]
+            album_list = self._album_ids or [model_id for model_id in list(self.loaded_models) if model_id.startswith('ALBUM:')]
         return [model_id for model_id in album_list if model_id in self.loaded_models][offset:size+offset]
 
     def getArtists(self, size:int=10) -> list:
-        return [model_id for model_id in list(self.loaded_models) if model_id.startswith('ARTIST:')][:size]
+        artist_ids = self._artist_ids or [model_id for model_id in list(self.loaded_models) if model_id.startswith('ARTIST:')]
+        return artist_ids[:size]
 
     def getPlaylists(self) -> list:
         self.load_playlists()
@@ -178,66 +294,18 @@ class Local(Base):
         return [song_id for song_id in star_dict if song_id.startswith("SONG:") and song_id in self.loaded_models]
 
     def verifyArtist(self, model_id:str, force_update:bool=False, use_threading:bool=True):
-        threading.Thread(target=self.getCoverArt, args=(model_id,)).start()
+        self._load_cover_art_async(model_id)
 
     def verifyAlbum(self, model_id:str, force_update:bool=False, use_threading:bool=True):
-        threading.Thread(target=self.getCoverArt, args=(model_id,)).start()
+        self._load_cover_art_async(model_id)
 
     def verifyPlaylist(self, model_id:str, force_update:bool=False, use_threading:bool=True):
-        threading.Thread(target=self.getCoverArt, args=(model_id,)).start()
+        self._load_cover_art_async(model_id)
 
     def verifySong(self, model_id:str, force_update:bool=False, use_threading:bool=True):
         def run():
-            # load star_dict
-            star_dict = self.open_json('stars.json')
-
-            # Updating Song Model
-            song = get_song_info_from_file(self.loaded_models.get(model_id).get_property("path"), star_dict=star_dict)
-            if not song:
-                return
-            song["id"] = model_id
-            song["starred"] = song.get("id") in star_dict
-            self.loaded_models.get(model_id).update_data(**song)
-
-            # Making Album Model
-            album_id = song.get('albumId')
-            if not album_id:
-                album_id = 'ALBUM:NO_ALBUM:{}'.format(song.get('artists')[0].get('id'))
-
-            if album_id:
-                if album_id in self.loaded_models:
-                    if {'id': model_id} not in self.loaded_models.get(album_id).get_property('song'):
-                        self.loaded_models.get(album_id).song.append({'id': model_id})
-                else:
-                    album = {
-                        'id': album_id,
-                        'coverArt': song.get('path'),
-                        'name': song.get('album') or _("No Album"),
-                        'artist': song.get('artist'),
-                        'artistId': song.get('artistId'),
-                        'song': [{'id': model_id}],
-                        'starred': album_id in star_dict
-                    }
-                    self.loaded_models[album.get('id')] = models.Album(**album)
-
-            # Making Artist Model
-            artist_id = song.get('artistId')
-            if artist_id:
-                if artist_id not in self.loaded_models:
-                    self.loaded_models[artist_id] = models.Artist(
-                        id=artist_id,
-                        coverArt=song.get('path'),
-                        name=song.get('artist'),
-                        album=[],
-                        albumCount=0,
-                        starred=artist_id in star_dict
-                    )
-
-                # Add album
-                album_list = self.loaded_models.get(artist_id).album
-                if album_id and not any(album.get('id') == album_id for album in album_list):
-                    self.loaded_models.get(artist_id).album.append({'id': album_id})
-                    self.loaded_models.get(artist_id).albumCount += 1
+            self._load_song_metadata(model_id, self.open_json('stars.json'))
+            self._rebuild_indexes()
 
         if force_update or not self.loaded_models.get(model_id).get_property('title'):
             if use_threading:
@@ -245,7 +313,7 @@ class Local(Base):
             else:
                 run()
 
-        threading.Thread(target=self.getCoverArt, args=(model_id,)).start()
+        self._load_cover_art_async(model_id)
 
     def star(self, model_id:str) -> bool:
         star_dict = self.open_json('stars.json')
@@ -311,7 +379,7 @@ class Local(Base):
         return self.getRandomSongs(count)
 
     def getRandomSongs(self, size:int=20) -> list:
-        songs = [song_id for song_id in list(self.loaded_models) if song_id.startswith('SONG:')]
+        songs = self._song_ids or [song_id for song_id in list(self.loaded_models) if song_id.startswith('SONG:')]
         return random.sample(songs, k=min(size, len(songs)))
 
     def getLyrics(self, songId:str) -> dict:
@@ -325,14 +393,16 @@ class Local(Base):
         return {'type': 'not-found'}
 
     def search(self, query:str, artistCount:int=0, artistOffset:int=0, albumCount:int=0, albumOffset:int=0, songCount:int=0, songOffset:int=0) -> dict:
-        all_artists = [model for model_id, model in self.loaded_models.items() if model_id.startswith('ARTIST:')]
-        all_albums = [model for model_id, model in self.loaded_models.items() if model_id.startswith('ALBUM:')]
-        all_songs = [model for model_id, model in self.loaded_models.items() if model_id.startswith('SONG:')]
+        needle = query.casefold()
+
+        def filter_ids(model_ids, offset, count):
+            matches = [model_id for model_id in model_ids if needle in self._search_text.get(model_id, '')]
+            return matches[offset:count+offset]
 
         return {
-            'artist': [model.id for model in all_artists if re.search(query, model.name, re.IGNORECASE)][artistOffset:artistCount+artistOffset],
-            'album': [model.id for model in all_albums if re.search(query, model.name, re.IGNORECASE) or re.search(query, model.artist, re.IGNORECASE)][albumOffset:albumCount+albumOffset],
-            'song': [model.id for model in all_songs if re.search(query, model.title, re.IGNORECASE) or re.search(query, model.album, re.IGNORECASE) or re.search(query, model.artist, re.IGNORECASE)][songOffset:songCount+songOffset]
+            'artist': filter_ids(self._artist_ids, artistOffset, artistCount),
+            'album': filter_ids(self._album_ids, albumOffset, albumCount),
+            'song': filter_ids(self._song_ids, songOffset, songCount)
         }
 
     def getInternetRadioStations(self) -> list:

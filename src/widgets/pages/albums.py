@@ -13,11 +13,11 @@ class AlbumsPage(Adw.NavigationPage):
     main_stack = Gtk.Template.Child()
     end_stack = Gtk.Template.Child()
     scrolledwindow = Gtk.Template.Child()
-    offset = 0
-    loading = False
-
     def __init__(self):
         super().__init__()
+        self.offset = 0
+        self.loading = False
+        self.album_buttons = {}
         self.scrolledwindow.get_vadjustment().connect('notify::upper', lambda va, ud: GLib.timeout_add(1000, self.check_scrollbar, va))
 
     def check_scrollbar(self, adjustment):
@@ -34,6 +34,21 @@ class AlbumsPage(Adw.NavigationPage):
 
     def reset(self):
         self.list_el.remove_all()
+        self.album_buttons = {}
+
+    def append_albums(self, albums:list):
+        for album_id in albums:
+            if album_id in self.album_buttons:
+                self.album_buttons[album_id].set_visible(True)
+            else:
+                button = AlbumButton(album_id)
+                self.album_buttons[album_id] = button
+                self.list_el.list_el.append(button)
+
+        self.end_stack.set_visible_child_name('end' if len(albums) < 20 else 'loading')
+        self.offset += 20
+        self.loading = False
+        self.update_visibility()
 
     def load_albums(self):
         if self.loading:
@@ -48,18 +63,7 @@ class AlbumsPage(Adw.NavigationPage):
             offset=self.offset
         )
 
-        for album_id in albums:
-            results = [button for button in list(self.list_el.list_el) if getattr(button, 'id', None) == album_id]
-            if len(results) > 0:
-                GLib.idle_add(results[0].set_visible, True)
-            else:
-                button = AlbumButton(album_id)
-                GLib.idle_add(self.list_el.list_el.append, button)
-
-        GLib.idle_add(self.end_stack.set_visible_child_name, 'end' if len(albums) < 20 else 'loading')
-        self.offset += 20
-        self.loading = False
-        GLib.idle_add(self.update_visibility)
+        GLib.idle_add(self.append_albums, albums)
 
     @Gtk.Template.Callback()
     def scroll_edge_reached(self, scrolledwindow, pos):
@@ -72,4 +76,3 @@ class AlbumsPage(Adw.NavigationPage):
                 self.main_stack.set_visible_child_name('content')
                 return
         self.main_stack.set_visible_child_name('no-content')
-

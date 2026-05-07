@@ -188,6 +188,76 @@ def toggle_star(window, model_id:str):
             if integration.star(model.get_property('id')):
                 model.set_property('starred', datetime.now(UTC).isoformat(timespec='microseconds').replace('+00:00', 'Z'))
 
+def sync_jellyfin_server(window):
+    integration = get_current_integration()
+    if not integration or integration.__gtype_name__ != 'NocturneIntegrationJellyfin':
+        toast = Adw.Toast(
+            title=_("Jellyfin sync is not available"),
+            timeout=2
+        )
+        window.toast_overlay.add_toast(toast)
+        return
+
+    action = window.get_application().lookup_action("sync_jellyfin_server")
+    if action:
+        action.set_enabled(False)
+
+    def reload_visible_page():
+        page = window.main_navigationview.get_visible_page()
+        if not page:
+            return
+
+        reset = getattr(page, "reset", None)
+        if page.__gtype_name__ in (
+            'NocturneSongsAllPage',
+            'NocturneAlbumsAllPage',
+            'NocturneArtistsPage'
+        ) and callable(reset):
+            reset()
+
+        detail_refresh = {
+            'NocturneAlbumPage': integration.verifyAlbum,
+            'NocturneArtistPage': integration.verifyArtist,
+            'NocturnePlaylistPage': integration.verifyPlaylist
+        }.get(page.__gtype_name__)
+        if detail_refresh and hasattr(page, "id"):
+            detail_refresh(page.id, force_update=True)
+
+        reload = getattr(page, "reload", None)
+        if callable(reload):
+            threading.Thread(target=reload).start()
+
+    def run():
+        synced = False
+        failed = False
+        try:
+            synced = integration.syncLibrary()
+        except Exception:
+            failed = True
+
+        if synced:
+            threading.Thread(target=window.update_playlist_section_of_sidebar).start()
+            GLib.idle_add(reload_visible_page)
+
+        if failed:
+            title = _("Jellyfin sync failed")
+        elif synced:
+            title = _("Jellyfin sync complete")
+        else:
+            title = _("Jellyfin sync is already running")
+
+        def show_toast():
+            window.toast_overlay.add_toast(Adw.Toast(
+                title=title,
+                timeout=2
+            ))
+
+        GLib.idle_add(show_toast)
+        if action:
+            GLib.idle_add(action.set_enabled, True)
+
+    threading.Thread(target=run).start()
+
 def logout(window):
     integration = get_current_integration()
     integration.terminate_instance()
@@ -276,6 +346,17 @@ def player_play(window):
 
 def player_pause(window):
     window.get_application().player.gst.set_state(Gst.State.PAUSED)
+
+def player_toggle(window):
+    player = window.get_application().player
+    if not player:
+        return
+
+    success, state, pending = player.gst.get_state(0)
+    if state == Gst.State.PLAYING:
+        player.gst.set_state(Gst.State.PAUSED)
+    else:
+        player.gst.set_state(Gst.State.PLAYING)
 
 def player_next(window):
     window.get_application().player.handle_song_change_request("next")
@@ -1041,4 +1122,3 @@ def delete_downloads(window, model_list:list):
             _("Deleted")
         )
     threading.Thread(target=run).start()
-

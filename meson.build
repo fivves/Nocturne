@@ -16,6 +16,6 @@ subdir('po')
 
 gnome.post_install(
      glib_compile_schemas: true,
-    gtk_update_icon_cache: true,
+    gtk_update_icon_cache: get_option('update_icon_cache'),
   update_desktop_database: true,
 )
