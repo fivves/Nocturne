@@ -5,6 +5,7 @@ APP_BIN="nocturne"
 APP_ID="com.jeffser.Nocturne"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PREFIX_WAS_SET="${PREFIX+x}"
 PREFIX="${PREFIX:-$HOME/.local}"
 BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build}"
 MESON="${MESON:-meson}"
@@ -51,22 +52,6 @@ is_arch_linux() {
   [[ "$os_id" == "arch" || " $os_id_like " == *" arch "* ]]
 }
 
-check_pipx_syncedlyrics_environment() {
-  if ! is_arch_linux || ! command -v pipx >/dev/null 2>&1; then
-    return 0
-  fi
-
-  if ! pipx list --short 2>/dev/null | grep -qx 'syncedlyrics'; then
-    return 0
-  fi
-
-  printf 'Checking pipx syncedlyrics environment...\n'
-  if ! pipx runpip syncedlyrics check; then
-    printf 'pipx syncedlyrics has broken Python dependencies. Reinstall it with: pipx reinstall syncedlyrics\n' >&2
-    exit 1
-  fi
-}
-
 check_synced_lyrics_python_dependencies() {
   printf 'Checking synced lyrics Python dependencies with %s...\n' "$PYTHON_BIN"
 
@@ -90,7 +75,7 @@ for module, package, arch_package in deps:
         missing.append((module, package, arch_package, exc))
 
 if missing:
-    print("Missing or broken synced lyrics Python dependencies:", file=sys.stderr)
+    print("Optional online synced lyrics support is unavailable:", file=sys.stderr)
     for module, package, arch_package, exc in missing:
         print(
             f"  - import {module!r} failed for {package} "
@@ -113,34 +98,52 @@ if missing_parameters:
     sys.exit(1)
 PY
   then
-    check_pipx_syncedlyrics_environment
     return 0
   fi
 
   if is_arch_linux; then
     cat >&2 <<'EOF'
 
-On Arch Linux, install the packaged dependencies first:
+Nocturne will still install and run. Jellyfin, Navidrome, local, and manually
+saved lyrics still work; only online synced-lyrics downloads are disabled.
+
+To enable online synced lyrics on Arch Linux, install the packaged dependencies:
   sudo pacman -S python-beautifulsoup4 python-rapidfuzz python-requests
 
-Then install syncedlyrics into the Python environment used by Nocturne.
-If you use pipx, verify its environment with:
-  sudo pacman -S python-pipx
-  pipx install syncedlyrics
-  pipx runpip syncedlyrics check
+Then install syncedlyrics into the Python interpreter used by Nocturne. For
+example, install into a project venv and build Nocturne with that interpreter:
+  python3 -m venv .venv
+  .venv/bin/python -m pip install syncedlyrics
+  PYTHON_BIN="$PWD/.venv/bin/python" ./install.sh
 
-Note: pipx creates an isolated environment. A standalone pipx install is not
-automatically importable by the python3 interpreter used by this Meson install.
+Note: pipx creates an isolated command environment. A standalone pipx install is
+not importable by the Python interpreter that runs Nocturne.
 EOF
   else
     cat >&2 <<'EOF'
 
-Install the missing Python packages before running this installer again:
+Nocturne will still install and run. To enable online synced lyrics, install
+these packages into the Python interpreter used by Nocturne:
   syncedlyrics beautifulsoup4 rapidfuzz requests
 EOF
   fi
+}
 
-  exit 1
+guard_default_prefix_sudo() {
+  if [[ "${EUID:-$(id -u)}" -eq 0 && -n "${SUDO_USER:-}" && -z "$PREFIX_WAS_SET" ]]; then
+    cat >&2 <<'EOF'
+This installer defaults to PREFIX=$HOME/.local and should not be run with sudo.
+Run it as your normal user:
+  ./install.sh
+
+To clean files from a previous accidental sudo install:
+  sudo ./cleanup-sudo-install.sh --apply
+
+For a system install, pass an explicit system prefix through sudo, for example:
+  sudo env PREFIX=/usr/local ./install.sh
+EOF
+    exit 1
+  fi
 }
 
 stop_running_nocturne() {
@@ -189,6 +192,7 @@ require_command "blueprint-compiler"
 require_command "glib-compile-resources"
 require_command "glib-compile-schemas"
 
+guard_default_prefix_sudo
 check_synced_lyrics_python_dependencies
 
 printf 'Configuring fresh build in %s...\n' "$NEW_BUILD"

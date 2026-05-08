@@ -2,15 +2,20 @@
 
 from ...constants import DATA_DIR
 from ...integrations import get_current_integration
-import syncedlyrics, os
+import os
 
 def online_get(track_name:str, artist_name:str, lrc_path):
-    return syncedlyrics.search(
-        "[{}] [{}]".format(track_name, artist_name),
-        enhanced=True,
-        synced_only=True,
-        save_path=lrc_path
-    )
+    try:
+        import syncedlyrics
+
+        return syncedlyrics.search(
+            "[{}] [{}]".format(track_name, artist_name),
+            enhanced=True,
+            synced_only=True,
+            save_path=lrc_path
+        )
+    except Exception:
+        return None
 
 def prepare_lrc(lrc_str:str) -> list:
     lrc_lines = []
@@ -118,4 +123,3 @@ def get_lyrics(song_id:str, online_download:bool) -> dict:
         return {'type': 'not-found', 'content': None}
 
     return {'type': 'lrc', 'content': prepare_lrc(lyrics)}
-

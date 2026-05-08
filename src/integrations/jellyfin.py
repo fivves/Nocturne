@@ -37,12 +37,13 @@ class Jellyfin(Base):
         self._library_cache_loaded = False
         self._library_cache_refreshing = False
         self._library_cache_complete = set()
+        self._library_cache_ids = {}
         self._library_cache_lock = threading.Lock()
 
     def _get_library_cache_file(self) -> str:
         return os.path.join(self.getIntegrationDir(), "library-cache-v3.json")
 
-    def _model_cache_type(self, model) -> str:
+    def _model_library_type(self, model) -> str:
         if isinstance(model, models.Album):
             return "album"
         if isinstance(model, models.Artist):
@@ -54,6 +55,30 @@ class Jellyfin(Base):
                 return ""
             return "song"
         return ""
+
+    def _model_cache_type(self, model) -> str:
+        model_type = self._model_library_type(model)
+        if not model_type or not model.get_property("id"):
+            return ""
+        return model_type
+
+    def _set_library_cache_ids(self, model_type:str, ids:list):
+        seen = set()
+        self._library_cache_ids[model_type] = []
+        for model_id in ids:
+            if model_id and model_id not in seen:
+                seen.add(model_id)
+                self._library_cache_ids[model_type].append(model_id)
+
+    def _prune_library_cache(self, ids_by_type:dict):
+        current_ids_by_type = {
+            model_type: set(ids)
+            for model_type, ids in ids_by_type.items()
+        }
+        for model_id, model in list(self.loaded_models.items()):
+            model_type = self._model_library_type(model)
+            if model_type in current_ids_by_type and model_id not in current_ids_by_type[model_type]:
+                del self.loaded_models[model_id]
 
     def _serialize_model(self, model) -> dict:
         data = {}
@@ -78,6 +103,7 @@ class Jellyfin(Base):
             "url": self.get_property("url").strip("/"),
             "userId": self.get_property("userId"),
             "complete": list(self._library_cache_complete),
+            "ids": self._library_cache_ids,
             "models": {}
         }
         for model_id, model in list(self.loaded_models.items()):
@@ -138,6 +164,12 @@ class Jellyfin(Base):
 
         self._library_cache_loaded = True
         self._library_cache_complete = set(payload.get("complete", []))
+        self._library_cache_ids = {}
+        ids_by_type = payload.get("ids", {})
+        if isinstance(ids_by_type, dict):
+            for model_type, ids in ids_by_type.items():
+                if isinstance(ids, list):
+                    self._set_library_cache_ids(model_type, ids)
 
     def _cache_model(self, model_id:str, model_type:str, data:dict):
         model_classes = {
@@ -217,8 +249,16 @@ class Jellyfin(Base):
 
         query = query.casefold()
         matches = []
-        for model_id, model in list(self.loaded_models.items()):
-            if self._model_cache_type(model) != model_type:
+        cached_model_ids = self._library_cache_ids.get(model_type)
+        if cached_model_ids is None:
+            cached_model_ids = [
+                model_id for model_id, model in list(self.loaded_models.items())
+                if self._model_cache_type(model) == model_type
+            ]
+
+        for model_id in cached_model_ids:
+            model = self.loaded_models.get(model_id)
+            if not model or self._model_cache_type(model) != model_type:
                 continue
             if query:
                 haystack = []
@@ -244,11 +284,19 @@ class Jellyfin(Base):
         self._library_cache_refreshing = True
         try:
             results = self.search("", artistCount=100000, albumCount=100000, songCount=100000, prefer_cache=False)
+            current_ids = {}
+            complete_types = set(results.get("_complete", []))
             for model_type in ("artist", "album", "song"):
-                if results.get(model_type):
+                if model_type in complete_types:
                     self._library_cache_complete.add(model_type)
-            if self.getPlaylists(prefer_cache=False):
+                    self._set_library_cache_ids(model_type, results.get(model_type, []))
+                    current_ids[model_type] = self._library_cache_ids.get(model_type, [])
+            playlists = self.getPlaylists(prefer_cache=False)
+            if playlists:
                 self._library_cache_complete.add("playlist")
+                self._set_library_cache_ids("playlist", playlists)
+                current_ids["playlist"] = self._library_cache_ids.get("playlist", [])
+            self._prune_library_cache(current_ids)
             self._save_library_cache()
             return True
         finally:
@@ -590,6 +638,8 @@ class Jellyfin(Base):
                 action_keys={"id": model_id},
                 mode="GET"
             )
+            if not artist.get("Id"):
+                return
 
             albums = self.make_request(
                 action='Users/{userId}/Items',
@@ -633,6 +683,8 @@ class Jellyfin(Base):
                 action_keys={"id": model_id},
                 mode="GET"
             )
+            if not album.get("Id"):
+                return
 
             songs = self.make_request(
                 action='Users/{userId}/Items',
@@ -683,6 +735,8 @@ class Jellyfin(Base):
                 action_keys={"id": model_id},
                 mode="GET"
             )
+            if not playlist.get("Id"):
+                return
 
             songs = self.make_request(
                 action='Users/{userId}/Items',
@@ -727,6 +781,8 @@ class Jellyfin(Base):
                 mode='GET',
                 params=params
             )
+            if not song.get("Id"):
+                return
 
             self.loaded_models.get(model_id).update_data(**self._song_data_from_item(song))
             self._save_library_cache()
@@ -923,8 +979,8 @@ class Jellyfin(Base):
 
         def fetch_items(item_type:str, limit:int, offset:int, fields:str=""):
             if limit <= 0:
-                return []
-            return self.make_request(
+                return [], True
+            response = self.make_request(
                 action='Users/{userId}/Items',
                 mode="GET",
                 params={
@@ -935,12 +991,15 @@ class Jellyfin(Base):
                     "StartIndex": offset,
                     "Fields": fields
                 }
-            ).get('Items', [])
+            )
+            if "Items" not in response:
+                return [], False
+            return response.get('Items', []), True
 
         def fetch_album_artists(limit:int, offset:int):
             if limit <= 0:
-                return []
-            return self.make_request(
+                return [], True
+            response = self.make_request(
                 action='Artists/AlbumArtists',
                 mode='GET',
                 params={
@@ -952,11 +1011,14 @@ class Jellyfin(Base):
                     "SortBy": "SortName",
                     "SortOrder": "Ascending"
                 }
-            ).get('Items', [])
+            )
+            if "Items" not in response:
+                return [], False
+            return response.get('Items', []), True
 
-        artists = fetch_album_artists(artistCount, artistOffset)
-        albums = fetch_items("MusicAlbum", albumCount, albumOffset, "ArtistItems,IsFavorite,RunTimeTicks")
-        songs = fetch_items("Audio", songCount, songOffset, "ArtistItems,AlbumId,RunTimeTicks,UserData,IndexNumber,ParentIndexNumber")
+        artists, artists_complete = fetch_album_artists(artistCount, artistOffset)
+        albums, albums_complete = fetch_items("MusicAlbum", albumCount, albumOffset, "ArtistItems,IsFavorite,RunTimeTicks")
+        songs, songs_complete = fetch_items("Audio", songCount, songOffset, "ArtistItems,AlbumId,RunTimeTicks,UserData,IndexNumber,ParentIndexNumber")
 
         for album in albums:
             artists_list = album.get("ArtistItems", [])
@@ -988,7 +1050,15 @@ class Jellyfin(Base):
         return {
             'artist': [item.get("Id") for item in artists],
             'album': [item.get("Id") for item in albums],
-            'song': [item.get("Id") for item in songs]
+            'song': [item.get("Id") for item in songs],
+            '_complete': [
+                model_type for model_type, complete in {
+                    'artist': artists_complete,
+                    'album': albums_complete,
+                    'song': songs_complete
+                }.items()
+                if complete
+            ]
         }
 
     def getInternetRadioStations(self) -> list:
