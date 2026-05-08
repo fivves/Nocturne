@@ -566,10 +566,9 @@ class Jellyfin(Base):
         )
         id_list = []
         for artist in response.get('Items', []):
-            artist_model = models.Artist(
-                **self._album_artist_data_from_item(artist),
-                **self._album_artist_album_data(artist.get("Id"))
-            )
+            artist_data = self._album_artist_data_from_item(artist)
+            artist_data.update(self._album_artist_album_data(artist.get("Id")))
+            artist_model = models.Artist(**artist_data)
             self.loaded_models[artist.get("Id")] = artist_model
             id_list.append(artist.get("Id"))
         self._save_library_cache()
