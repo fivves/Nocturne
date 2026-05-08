@@ -159,13 +159,23 @@ stop_running_nocturne() {
   pkill -f "$ROOT_DIR/nocturne-uninstalled" >/dev/null 2>&1 || true
 }
 
+remove_icon_cache_if_possible() {
+  local cache_path="$1"
+
+  if [[ ! -e "$cache_path" ]]; then
+    return 0
+  fi
+
+  printf 'Removing stale icon cache %s...\n' "$cache_path"
+  if ! rm -f "$cache_path"; then
+    printf 'Warning: could not remove stale icon cache %s; continuing.\n' "$cache_path" >&2
+  fi
+}
+
 prepare_install_dirs() {
   local icon_dir="$PREFIX/share/icons/hicolor"
 
-  if [[ -e "$icon_dir/.icon-theme.cache" ]]; then
-    printf 'Removing stale icon cache %s...\n' "$icon_dir/.icon-theme.cache"
-    rm -f "$icon_dir/.icon-theme.cache"
-  fi
+  remove_icon_cache_if_possible "$icon_dir/.icon-theme.cache"
 }
 
 refresh_icon_cache() {
@@ -175,10 +185,7 @@ refresh_icon_cache() {
     return 0
   fi
 
-  if [[ -e "$icon_dir/.icon-theme.cache" ]]; then
-    printf 'Removing stale icon cache %s...\n' "$icon_dir/.icon-theme.cache"
-    rm -f "$icon_dir/.icon-theme.cache"
-  fi
+  remove_icon_cache_if_possible "$icon_dir/.icon-theme.cache"
 
   if ! gtk4-update-icon-cache -q -t -f -i "$icon_dir"; then
     printf 'Warning: could not refresh icon cache for %s; install completed anyway.\n' "$icon_dir" >&2
