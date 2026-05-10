@@ -19,7 +19,7 @@ class RadiosPage(Adw.NavigationPage):
         radios = integration.getInternetRadioStations()
         GLib.idle_add(self.reset)
         for id in radios:
-            GLib.idle_add(self.list_el.append, SongRow(id))
+            GLib.idle_add(lambda id=id: self.list_el.append(SongRow(id)))
         GLib.idle_add(self.update_visibility)
 
     def reset(self):

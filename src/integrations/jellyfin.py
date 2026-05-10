@@ -1061,42 +1061,98 @@ class Jellyfin(Base):
         }
 
     def getInternetRadioStations(self) -> list:
-        radios = self.make_request(
-            action='LiveTv/Channels',
-            mode='GET',
-            params={
-                "userId": self.get_property("userId"),
-                "type": "Radio"
-            }
-        ).get('Items', [])
+        def cache_radio(model_id:str, title:str, streamUrl:str=None):
+            if not model_id or model_id in self.cache_actions.get('deleted-radios'):
+                return False
+
+            radio_model = models.Song(
+                id=model_id,
+                title=title,
+                streamUrl=streamUrl or "",
+                duration=-1,
+                isRadio=True
+            )
+            self.loaded_models[model_id] = radio_model
+            return True
+
+        def get_channels(params:dict=None) -> list:
+            params = params or {}
+            response = self.make_request(
+                action='LiveTv/Channels',
+                mode='GET',
+                params={
+                    "userId": self.get_property("userId"),
+                    **params
+                }
+            )
+            return response.get('Items', []) if isinstance(response, dict) else []
+
+        def add_channel(radio:dict) -> bool:
+            radio_id = radio.get("Id")
+            if not cache_radio(radio_id, radio.get("Name")):
+                return False
+
+            raw_url = None
+            radio_metadata = self.make_request(
+                action='Items/{id}/PlaybackInfo',
+                action_keys={'id': radio_id},
+                params={
+                    "fields": "Path",
+                    "userId": self.get_property("userId")
+                }
+            ).get('MediaSources', [])
+            if len(radio_metadata) > 0:
+                raw_url = radio_metadata[0].get('Path')
+            if not raw_url:
+                raw_url = self.get_stream_url(radio_id)
+            self.loaded_models.get(radio_id).set_property("streamUrl", raw_url)
+            return True
+
+        channels = get_channels({"type": "Radio"})
+
+        # Some Jellyfin M3U internet-radio stations are exposed as Live TV channels
+        # without the Radio channel type, so retry without that filter before giving up.
+        if not channels:
+            channels = get_channels()
 
         id_list = []
-        for radio in radios:
-            if radio.get("Id") not in self.cache_actions.get('deleted-radios'):
-                radio_model = models.Song(
-                    id=radio.get("Id"),
-                    title=radio.get("Name"),
-                    duration=-1,
-                    isRadio=True
-                )
-                self.loaded_models[radio.get("Id")] = radio_model
+        for radio in channels:
+            radio_id = radio.get("Id")
+            if radio_id in id_list:
+                continue
+            if add_channel(radio):
+                id_list.append(radio_id)
 
-                raw_url = None
-                radio_metadata = test_radio = self.make_request(
-                    action='Items/{id}/PlaybackInfo',
-                    action_keys={'id': radio.get('Id')},
-                    params={
-                        "fields": "Path",
-                        "userId": self.get_property("userId")
-                    }
-                ).get('MediaSources', [])
-                if len(radio_metadata) > 0:
-                    raw_url = radio_metadata[0].get('Path')
-                if not raw_url:
-                    raw_url = self.get_stream_url(radio.get("Id"))
-                self.loaded_models.get(radio.get("Id")).set_property("streamUrl", raw_url)
+        tuner_hosts_response = self.make_request(
+            action='LiveTv/TunerHosts',
+            mode='GET'
+        )
+        if isinstance(tuner_hosts_response, dict):
+            tuner_hosts = tuner_hosts_response.get('Items', [])
+        elif isinstance(tuner_hosts_response, list):
+            tuner_hosts = tuner_hosts_response
+        else:
+            tuner_hosts = []
 
-                id_list.append(radio.get("Id"))
+        if not tuner_hosts:
+            live_tv_config = self.make_request(
+                action='System/Configuration/livetv',
+                mode='GET'
+            )
+            tuner_hosts = live_tv_config.get('TunerHosts', []) if isinstance(live_tv_config, dict) else []
+
+        if not isinstance(tuner_hosts, list):
+            tuner_hosts = []
+
+        for radio in tuner_hosts:
+            radio_id = radio.get("Id")
+            if radio_id in id_list:
+                continue
+            title = radio.get("FriendlyName") or radio.get("Name") or radio.get("Url")
+            stream_url = radio.get("Url") or ""
+            if cache_radio(radio_id, title, stream_url):
+                id_list.append(radio_id)
+
         return id_list
 
     def createInternetRadioStation(self, name:str, streamUrl:str) -> bool:
