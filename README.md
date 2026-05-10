@@ -92,6 +92,7 @@ The following dependencies are requirements of the project.
 - `libsecret`
 - `gstreamer`
 - `blueprint-compiler >= 0.18.0`
+- Python packages: `requests`, `urllib3`, `Pillow`, `pycairo`, `tinytag`, `colorthief`, `mpris-server`
 
 ## Install
 ### Linux (Flatpak)
@@ -104,6 +105,16 @@ flatpak install flathub com.jeffser.Nocturne
 Nocturne is packaged unofficially in the AUR, to install it first make sure you have an AUR helper such as [yay](https://github.com/jguer/yay).
 ```sh
 yay -S nocturne
+```
+
+### Local Installer
+```sh
+./install.sh
+```
+The local installer checks the launch-time dependency stack before building. On
+Arch Linux it can also install missing dependencies:
+```sh
+INSTALL_DEPS=1 ./install.sh
 ```
 
 ## Build
