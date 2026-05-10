@@ -2,6 +2,7 @@
 
 from gi.repository import Gtk, Adw, GLib, GObject, Gio
 from ...integrations import get_current_integration, models
+from ..search import clear_search_entry
 from ..song import SongRow, SongSmallRow
 import threading
 
@@ -93,6 +94,10 @@ class SongsAllPage(Adw.NavigationPage):
         for row in list(self.list_rows.values()) + list(self.grid_rows.values()):
             row.set_visible(False)
         threading.Thread(target=self.search, args=(30, self.search_token)).start()
+
+    @Gtk.Template.Callback()
+    def on_stop_search(self, search_entry):
+        clear_search_entry(search_entry)
 
     @Gtk.Template.Callback()
     def scroll_edge_reached(self, scrolledwindow, pos):

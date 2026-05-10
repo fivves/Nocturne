@@ -3,6 +3,7 @@
 from gi.repository import Gtk, Adw, GLib, GObject, Gio
 from ...integrations import get_current_integration, models
 from ..artist import ArtistRow, ArtistButton
+from ..search import clear_search_entry
 import threading
 
 @Gtk.Template(resource_path='/com/jeffser/Nocturne/pages/artists.ui')
@@ -93,7 +94,11 @@ class ArtistsPage(Adw.NavigationPage):
         for row in list(self.list_rows.values()) + list(self.grid_rows.values()):
             row.set_visible(False)
         threading.Thread(target=self.search, args=(self.search_token,)).start()
-            
+
+    @Gtk.Template.Callback()
+    def on_stop_search(self, search_entry):
+        clear_search_entry(search_entry)
+
     @Gtk.Template.Callback()
     def scroll_edge_reached(self, scrolledwindow, pos):
         if pos == Gtk.PositionType.BOTTOM and self.end_stack.get_visible_child_name() == 'loading':

@@ -2,6 +2,7 @@
 
 from gi.repository import Gtk, Adw, GLib, GObject, Gio
 from ...integrations import get_current_integration, models
+from ..search import clear_search_entry
 from ..song import SongRow
 import re
 
@@ -31,6 +32,10 @@ class RadiosPage(Adw.NavigationPage):
         for child in list(self.list_el):
             child.set_visible(child.get_name() != 'GtkListBoxRow' and re.search(query, child.get_name(), re.IGNORECASE))
         GLib.idle_add(self.update_visibility)
+
+    @Gtk.Template.Callback()
+    def on_stop_search(self, search_entry):
+        clear_search_entry(search_entry)
 
     def update_visibility(self):
         for row in list(self.list_el):

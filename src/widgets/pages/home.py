@@ -5,6 +5,7 @@ from ...integrations import get_current_integration
 from ..album import AlbumButton
 from ..artist import ArtistButton
 from ..playlist import PlaylistButton
+from ..search import clear_search_entry
 from ..song import SongSmallRow
 import threading
 
@@ -176,6 +177,10 @@ class HomePage(Adw.NavigationPage):
         query = search_entry.get_text()
         self.query = query
         threading.Thread(target=self.search if query else self.reload, args=(query, token) if query else ()).start()
+
+    @Gtk.Template.Callback()
+    def on_stop_search(self, search_entry):
+        clear_search_entry(search_entry)
 
     def reset(self):
         self.search_token += 1

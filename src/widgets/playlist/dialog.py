@@ -3,6 +3,7 @@
 from gi.repository import Gtk, Adw, GLib
 from .selector_row import PlaylistSelectorRow
 from ...integrations import get_current_integration
+from ..search import clear_search_entry
 import re
 
 @Gtk.Template(resource_path='/com/jeffser/Nocturne/playlist/dialog.ui')
@@ -54,3 +55,6 @@ class PlaylistDialog(Adw.Dialog):
         self.add_button_el.set_action_name('app.add_songs_to_playlist')
         self.add_button_el.set_title(query or _("New Playlist"))
 
+    @Gtk.Template.Callback()
+    def on_stop_search(self, search_entry):
+        clear_search_entry(search_entry)

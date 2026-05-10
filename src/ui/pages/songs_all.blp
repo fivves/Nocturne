@@ -27,6 +27,7 @@ template $NocturneSongsAllPage: Adw.NavigationPage {
         key-capture-widget: main_stack;
         placeholder-text: _("Songs");
         search-changed => $on_search();
+        stop-search => $on_stop_search();
         accessibility {
           label: _("Search songs");
         }

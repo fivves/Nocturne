@@ -3,6 +3,7 @@
 from gi.repository import Gtk, Adw, GLib, GObject, Gio
 from ...integrations import get_current_integration, models
 from ..album import AlbumRow, AlbumButton
+from ..search import clear_search_entry
 import threading
 
 @Gtk.Template(resource_path='/com/jeffser/Nocturne/pages/albums_all.ui')
@@ -93,6 +94,10 @@ class AlbumsAllPage(Adw.NavigationPage):
         for widget in list(self.list_rows.values()) + list(self.grid_rows.values()):
             widget.set_visible(False)
         threading.Thread(target=self.search, args=(self.search_token,)).start()
+
+    @Gtk.Template.Callback()
+    def on_stop_search(self, search_entry):
+        clear_search_entry(search_entry)
 
     @Gtk.Template.Callback()
     def scroll_edge_reached(self, scrolledwindow, pos):

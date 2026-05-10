@@ -11,6 +11,7 @@ template $NocturnePlaylistDialog: Adw.Dialog {
         placeholder-text: _("Search (or create new playlist)");
         hexpand: true;
         search-changed => $search_changed();
+        stop-search => $on_stop_search();
       };
     }
     content: Gtk.ScrolledWindow {

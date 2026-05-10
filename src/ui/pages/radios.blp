@@ -12,6 +12,7 @@ template $NocturneRadiosPage: Adw.NavigationPage {
         key-capture-widget: main_stack;
         placeholder-text: _("Radios");
         search-changed => $on_search();
+        stop-search => $on_stop_search();
         accessibility {
           label: _("Search radios");
         }
