@@ -17,7 +17,7 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-from gi.repository import Gtk, Adw, GLib, Gst, Gio, GObject, Pango
+from gi.repository import Gtk, Adw, GLib, Gst, Gio, GObject, Pango, Gdk
 
 from . import actions
 from .integrations import get_current_integration
@@ -92,6 +92,33 @@ class NocturneWindow(Adw.ApplicationWindow):
             shortcuts=shortcuts,
             parameter_type=GLib.VariantType.new(parameter_type) if parameter_type else None
         )
+
+    def focus_accepts_text(self, widget) -> bool:
+        while widget:
+            if isinstance(widget, (Gtk.Entry, Gtk.SearchEntry, Gtk.TextView, Gtk.Editable)):
+                return True
+            widget = widget.get_parent()
+        return False
+
+    def setup_keyboard_shortcuts(self):
+        key_controller = Gtk.EventControllerKey()
+        key_controller.connect('key-pressed', self.on_key_pressed)
+        self.add_controller(key_controller)
+
+    def on_key_pressed(self, controller, keyval, keycode, state):
+        if keyval != Gdk.KEY_space:
+            return Gdk.EVENT_PROPAGATE
+        modifiers = (
+            Gdk.ModifierType.CONTROL_MASK |
+            Gdk.ModifierType.ALT_MASK |
+            Gdk.ModifierType.META_MASK |
+            Gdk.ModifierType.SUPER_MASK
+        )
+        if state & modifiers or self.focus_accepts_text(self.get_focus()):
+            return Gdk.EVENT_PROPAGATE
+
+        actions.player_toggle(self)
+        return Gdk.EVENT_STOP
 
     def setup_sidebar(self):
         settings = Gio.Settings(schema_id="com.jeffser.Nocturne")
@@ -207,7 +234,8 @@ class NocturneWindow(Adw.ApplicationWindow):
 
         self.create_action(actions.player_play, parameter_type=None)
         self.create_action(actions.player_pause, parameter_type=None)
-        self.create_action(actions.player_toggle, shortcuts=['space'], parameter_type=None)
+        self.create_action(actions.player_toggle, parameter_type=None)
+        self.setup_keyboard_shortcuts()
         self.create_action(actions.player_next, parameter_type=None)
         self.create_action(actions.player_previous, parameter_type=None)
 

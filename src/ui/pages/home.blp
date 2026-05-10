@@ -9,7 +9,15 @@ template $NocturneHomePage: Adw.NavigationPage {
 
     [top]
     Adw.HeaderBar {
-      show-title: false;
+      title-widget: Gtk.SearchEntry search_entry {
+        hexpand: true;
+        key-capture-widget: main_stack;
+        placeholder-text: _("Search library");
+        search-changed => $on_search();
+        accessibility {
+          label: _("Search library");
+        }
+      };
     }
 
     content: Gtk.Stack main_stack {
