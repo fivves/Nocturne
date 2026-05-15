@@ -342,7 +342,7 @@ def toggle_fullscreen(window):
 # -- PLAYER --
 
 def player_play(window):
-    window.get_application().player.gst.set_state(Gst.State.PLAYING)
+    window.get_application().player.play()
 
 def player_pause(window):
     window.get_application().player.gst.set_state(Gst.State.PAUSED)
@@ -356,7 +356,7 @@ def player_toggle(window):
     if state == Gst.State.PLAYING:
         player.gst.set_state(Gst.State.PAUSED)
     else:
-        player.gst.set_state(Gst.State.PLAYING)
+        player.play()
 
 def player_next(window):
     window.get_application().player.handle_song_change_request("next")

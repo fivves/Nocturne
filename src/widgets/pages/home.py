@@ -24,6 +24,7 @@ class HomePage(Adw.NavigationPage):
         super().__init__()
         self.search_token = 0
         self.query = ""
+        self._search_timeout_id = None
 
     def reload(self):
         # call in different thread
@@ -64,7 +65,7 @@ class HomePage(Adw.NavigationPage):
             icon_name="music-queue-symbolic",
             page_tag="albums-all"
         )
-        albums = integration.getAlbumList(size=max_albums) if max_albums > 0 else []
+        albums = integration.getAlbumList(list_type="random", size=max_albums) if max_albums > 0 else []
         threading.Thread(
             target=self.album_carousel.set_widgets,
             args=([AlbumButton(id) for id in albums],)
@@ -76,7 +77,7 @@ class HomePage(Adw.NavigationPage):
             icon_name="music-artist-symbolic",
             page_tag="artists"
         )
-        artists = integration.getArtists(size=max_artists) if max_artists > 0 else []
+        artists = integration.getArtists(list_type="random", size=max_artists) if max_artists > 0 else []
         threading.Thread(
             target=self.artist_carousel.set_widgets,
             args=([ArtistButton(id) for id in artists],)
@@ -101,7 +102,12 @@ class HomePage(Adw.NavigationPage):
         integration = get_current_integration()
         needle = query.casefold()
         matches = []
-        for playlist_id in integration.getPlaylists():
+        playlist_ids = [
+            model_id
+            for model_id in integration.loaded_models
+            if model_id.startswith('PLAYLIST:')
+        ]
+        for playlist_id in playlist_ids:
             model = integration.loaded_models.get(playlist_id)
             name = model.get_property('name') if model else ''
             if needle in name.casefold():
@@ -174,9 +180,23 @@ class HomePage(Adw.NavigationPage):
     def on_search(self, search_entry):
         self.search_token += 1
         token = self.search_token
-        query = search_entry.get_text()
+        query = search_entry.get_text().strip()
         self.query = query
-        threading.Thread(target=self.search if query else self.reload, args=(query, token) if query else ()).start()
+
+        if self._search_timeout_id:
+            GLib.source_remove(self._search_timeout_id)
+            self._search_timeout_id = None
+
+        delay = 250 if query else 100
+
+        def dispatch_search():
+            self._search_timeout_id = None
+            target = self.search if query else self.reload
+            args = (query, token) if query else ()
+            threading.Thread(target=target, args=args).start()
+            return GLib.SOURCE_REMOVE
+
+        self._search_timeout_id = GLib.timeout_add(delay, dispatch_search)
 
     @Gtk.Template.Callback()
     def on_stop_search(self, search_entry):
@@ -184,6 +204,9 @@ class HomePage(Adw.NavigationPage):
 
     def reset(self):
         self.search_token += 1
+        if self._search_timeout_id:
+            GLib.source_remove(self._search_timeout_id)
+            self._search_timeout_id = None
         threading.Thread(target=self.song_wrapbox.set_widgets, args=([],)).start()
         threading.Thread(target=self.album_carousel.set_widgets, args=([],)).start()
         threading.Thread(target=self.artist_carousel.set_widgets, args=([],)).start()

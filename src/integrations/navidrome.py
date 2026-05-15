@@ -151,7 +151,7 @@ class Navidrome(Base):
 
         return album_ids
 
-    def getArtists(self, size:int=10) -> list:
+    def getArtists(self, size:int=10, list_type:str="alphabetical") -> list:
         # if size == -1 then it will return every artist id in their names alphabetical order
         response = self.make_request('getArtists')
 
@@ -162,9 +162,10 @@ class Navidrome(Base):
         if len(artist_dicts) == 0:
             return []
 
-        if size != -1:
-            # randomize the dicts
+        if size != -1 and list_type == "random":
             artist_dicts = random.sample(artist_dicts, min(size, len(artist_dicts)))
+        elif size != -1:
+            artist_dicts = artist_dicts[:size]
 
         artist_ids = []
         for artist_dict in artist_dicts:
@@ -597,4 +598,3 @@ class NavidromeIntegrated(Navidrome):
             self.process.terminate()
             self.process = None
         self.set_property('serverRunning', False)
-

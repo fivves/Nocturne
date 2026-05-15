@@ -78,10 +78,10 @@ EOF
 Arch Linux package starting point:
   sudo pacman -S python-gobject gtk4 libadwaita libsecret gstreamer \
     gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly \
-    python-requests python-urllib3 python-pillow python-cairo python-tinytag
+    python-requests python-urllib3 python-pillow python-cairo
 
 Python packages that may need pip/AUR if your distro does not package them:
-  colorthief mpris-server
+  tinytag colorthief mpris-server syncedlyrics beautifulsoup4 rapidfuzz
 EOF
   else
     cat >&2 <<'EOF'
@@ -126,7 +126,7 @@ EOF
     sudo pacman -S --needed \
       python-gobject gtk4 libadwaita libsecret gstreamer \
       gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly \
-      python-requests python-urllib3 python-pillow python-cairo python-tinytag
+      python-requests python-urllib3 python-pillow python-cairo
   else
     cat >&2 <<'EOF'
 Automatic system dependency installation is only implemented for Arch Linux.
@@ -138,11 +138,16 @@ EOF
   printf 'Creating Python environment in %s...\n' "$PYTHON_VENV"
   "$PYTHON_BIN" -m venv --system-site-packages "$PYTHON_VENV"
 
-  printf 'Installing Nocturne Python dependencies into %s...\n' "$PYTHON_VENV"
-  "$PYTHON_VENV/bin/python" -m pip install \
-    requests urllib3 pillow tinytag colorthief mpris-server
+  install_venv_python_dependencies
 
   PYTHON_BIN="$PYTHON_VENV/bin/python"
+}
+
+install_venv_python_dependencies() {
+  printf 'Installing Nocturne Python dependencies into %s...\n' "$PYTHON_VENV"
+  "$PYTHON_VENV/bin/python" -m pip install \
+    requests urllib3 pillow tinytag colorthief mpris-server \
+    syncedlyrics beautifulsoup4 rapidfuzz
 }
 
 check_required_launch_dependencies() {
@@ -242,6 +247,8 @@ is_arch_linux() {
 }
 
 check_synced_lyrics_python_dependencies() {
+  local allow_install="${1:-1}"
+
   printf 'Checking synced lyrics Python dependencies with %s...\n' "$PYTHON_BIN"
 
   if "$PYTHON_BIN" - <<'PY'
@@ -288,6 +295,18 @@ if missing_parameters:
 PY
   then
     return 0
+  fi
+
+  if [[ "$allow_install" == "1" ]] && should_install_dependencies; then
+    if [[ "$PYTHON_BIN" != "$PYTHON_VENV/bin/python" ]]; then
+      printf 'Creating Python environment in %s...\n' "$PYTHON_VENV"
+      "$PYTHON_BIN" -m venv --system-site-packages "$PYTHON_VENV"
+      PYTHON_BIN="$PYTHON_VENV/bin/python"
+    fi
+
+    install_venv_python_dependencies
+    check_synced_lyrics_python_dependencies 0
+    return
   fi
 
   if is_arch_linux; then

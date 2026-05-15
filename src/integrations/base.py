@@ -108,8 +108,9 @@ class Base(GObject.Object):
         print('WARNING', 'getAlbumList', 'not implemented')
         return []
 
-    def getArtists(self, size:int=10) -> list:
+    def getArtists(self, size:int=10, list_type:str="alphabetical") -> list:
         # add non existing elements to self.loaded_models, returns lists of IDs, nothing more
+        # list_type = alphabetical, random
         print('WARNING', 'getArtists', 'not implemented')
         return []
 

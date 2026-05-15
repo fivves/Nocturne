@@ -547,8 +547,11 @@ class Jellyfin(Base):
         self._save_library_cache()
         return id_list
 
-    def getArtists(self, size:int=10) -> list:
+    def getArtists(self, size:int=10, list_type:str="alphabetical") -> list:
         cached_artists = self._cached_ids("artist", count=size)
+        if list_type == "random" and cached_artists:
+            all_cached_artists = self._cached_ids("artist")
+            return random.sample(all_cached_artists, min(size, len(all_cached_artists)))
         if cached_artists:
             return cached_artists
 
@@ -559,6 +562,9 @@ class Jellyfin(Base):
             "SortBy": "SortName",
             "SortOrder": "Ascending"
         }
+        if list_type == "random":
+            params["SortBy"] = "Random"
+            params.pop("SortOrder")
         response = self.make_request(
             action='Artists/AlbumArtists',
             mode='GET',

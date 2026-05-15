@@ -116,6 +116,9 @@ Arch Linux it can also install missing dependencies:
 ```sh
 INSTALL_DEPS=1 ./install.sh
 ```
+Arch repo packages are installed with pacman. Python packages that are not in
+the official repos, including `tinytag` and `syncedlyrics`, are installed into
+Nocturne's local venv.
 
 ## Build
 ### Linux (Flatpak)

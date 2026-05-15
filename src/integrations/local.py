@@ -281,8 +281,10 @@ class Local(Base):
             album_list = self._album_ids or [model_id for model_id in list(self.loaded_models) if model_id.startswith('ALBUM:')]
         return [model_id for model_id in album_list if model_id in self.loaded_models][offset:size+offset]
 
-    def getArtists(self, size:int=10) -> list:
+    def getArtists(self, size:int=10, list_type:str="alphabetical") -> list:
         artist_ids = self._artist_ids or [model_id for model_id in list(self.loaded_models) if model_id.startswith('ARTIST:')]
+        if list_type == "random":
+            return random.sample(artist_ids, min(size, len(artist_ids)))
         return artist_ids[:size]
 
     def getPlaylists(self) -> list:
@@ -396,8 +398,21 @@ class Local(Base):
         needle = query.casefold()
 
         def filter_ids(model_ids, offset, count):
-            matches = [model_id for model_id in model_ids if needle in self._search_text.get(model_id, '')]
-            return matches[offset:count+offset]
+            if count <= 0:
+                return []
+
+            matches = []
+            skipped = 0
+            for model_id in model_ids:
+                if needle not in self._search_text.get(model_id, ''):
+                    continue
+                if skipped < offset:
+                    skipped += 1
+                    continue
+                matches.append(model_id)
+                if len(matches) >= count:
+                    break
+            return matches
 
         return {
             'artist': filter_ids(self._artist_ids, artistOffset, artistCount),

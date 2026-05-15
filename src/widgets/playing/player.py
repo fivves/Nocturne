@@ -148,13 +148,13 @@ class PlayerAdapter(MprisAdapter):
         self.player.gst.set_state(Gst.State.PAUSED)
 
     def play(self):
-        self.player.gst.set_state(Gst.State.PLAYING)
+        self.player.play()
 
     def previous(self):
         self.player.handle_song_change_request("previous")
 
     def resume(self):
-        self.player.gst.set_state(Gst.State.PLAYING)
+        self.player.play()
 
     def seek(self, time:Position, track_id: DbusObj | None = None):
         self.player.gst.seek_simple(
@@ -402,6 +402,33 @@ class Player(EventAdapter):
         else:
             integration.loaded_models.get('currentSong').set_property('songId', None)
 
+    def get_current_song_model(self):
+        integration = get_current_integration()
+        if not integration:
+            return None
+        current_song = integration.loaded_models.get('currentSong')
+        if not current_song:
+            return None
+        return integration.loaded_models.get(current_song.get_property('songId'))
+
+    def current_song_is_radio(self) -> bool:
+        model = self.get_current_song_model()
+        return bool(model and model.get_property('isRadio'))
+
+    def play(self, force_live_restart:bool=False):
+        integration = get_current_integration()
+        current_song = integration.loaded_models.get('currentSong') if integration else None
+        song_id = current_song.get_property('songId') if current_song else None
+
+        if song_id and self.current_song_is_radio():
+            success, state, pending = self.gst.get_state(0)
+            if force_live_restart or state != Gst.State.PLAYING:
+                stream_url = integration.get_stream_url(song_id)
+                self.gst.set_state(Gst.State.READY)
+                self.gst.set_property('uri', stream_url)
+
+        self.gst.set_state(Gst.State.PLAYING)
+
     def auto_play(self):
         if integration := get_current_integration():
             generated_queue = integration.loaded_models.get('currentSong').get_property('generatedQueue')
@@ -462,7 +489,10 @@ class Player(EventAdapter):
                                     if current_artist != artist:
                                         model.set_property('displaySongArtist', artist)
             elif message.type == Gst.MessageType.EOS:
-                self.handle_song_change_request("end")
+                if self.current_song_is_radio():
+                    self.play(force_live_restart=True)
+                else:
+                    self.handle_song_change_request("end")
             elif message.type == Gst.MessageType.ERROR:
                 err, debug = message.parse_error()
                 print("Error: {}".format(err.message))
