@@ -520,7 +520,10 @@ class Player(EventAdapter):
         else:
             current_id, song_list = integration.getPlayQueue()
             for song in song_list:
-                integration.verifySong(song)
+                if integration.__gtype_name__ == 'NocturneIntegrationJellyfin':
+                    integration.loaded_models.setdefault(song, models.Song(id=song))
+                else:
+                    integration.verifySong(song)
         if len(song_list) > 0:
             if len(self.application.external_songs) == 0:
                self.pause_next_change = True

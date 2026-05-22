@@ -373,10 +373,12 @@ class Jellyfin(Base):
 
     def on_login(self):
         self._load_library_cache()
-        threading.Thread(target=self._refresh_library_cache).start()
 
     def get_stream_url(self, song_id:str) -> str:
         model = self.loaded_models.get(song_id)
+        if not model:
+            model = models.Song(id=song_id)
+            self.loaded_models[song_id] = model
         if model.get_property('isRadio') and model.get_property('streamUrl'):
             return model.get_property('streamUrl')
         elif model.get_property('isExternalFile'):
